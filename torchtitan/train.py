@@ -663,6 +663,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
 if __name__ == "__main__":
     init_logger()
+
+    # Disable strict stride assertions in TorchInductor to handle non-contiguous tensors
+    # This fixes compilation issues with expand() operations in attention layers
+    torch._inductor.config.size_asserts = False
+
     config_manager = ConfigManager()
     config = config_manager.parse_args()
     trainer: Optional[Trainer] = None
