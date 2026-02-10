@@ -60,3 +60,4 @@ class QuantizationConverter(ModelConverter):
 # (imports down here to avoid circular imports with QuantizationConverter)
 import torchtitan.components.quantization.float8  # noqa: F401
 import torchtitan.components.quantization.mx  # noqa: F401
+import torchtitan.components.quantization.te  # noqa: F401

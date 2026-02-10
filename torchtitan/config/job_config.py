@@ -840,12 +840,34 @@ class QuantizedLinear:
 
 
 @dataclass
+class TEGroupedMM:
+    mode: Literal["mxfp8", "bf16"] = "mxfp8"
+    """
+    TE grouped GEMM mode:
+      - "mxfp8": MXFP8 quantization (block_size=32, E8M0 scales) via TE's MXFP8Quantizer.
+      - "bf16": BF16 grouped GEMM via TE's general_grouped_gemm (no quantization).
+
+    Example: --quantize.grouped_mm.te.mode="mxfp8"
+    """
+
+    fqns: list[str] | str = field(default_factory=list)
+    """
+    Comma-separated list of fully qualified names of MoE modules to apply
+    TE grouped GEMM to. Requires TransformerEngine.
+    Example: --quantize.grouped_mm.te.fqns="experts"
+    """
+
+
+@dataclass
 class QuantizedGroupedMM:
     float8: Float8GroupedMM = field(default_factory=Float8GroupedMM)
     """FP8 training config for grouped GEMMs"""
 
     mx: MXGroupedMM = field(default_factory=MXGroupedMM)
     """MX training config for grouped GEMMs"""
+
+    te: TEGroupedMM = field(default_factory=TEGroupedMM)
+    """TE grouped GEMM config (MXFP8 or BF16 via TransformerEngine)"""
 
 
 @dataclass

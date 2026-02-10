@@ -333,6 +333,9 @@ def get_buffer(
             use_fp8=fp8_dispatch,
             num_sms_dispatch_api=_NUM_SMS_DISPATCH,
             num_sms_combine_api=_NUM_SMS_COMBINE,
+            load_cached_kernels=False,
+            use_shared_buffer=True,
+            enable_custom_allgather=False,
         )
 
 
@@ -406,8 +409,7 @@ def combine_tokens(hidden_states: torch.Tensor, state: DispatchState) -> torch.T
     Applies deferred scores (if any), then unpermutes via the opaque dispatch handle.
     """
     if state.permuted_scores is not None:
-        # In-place to reduce peak memory during recompute.
-        hidden_states.mul_(state.permuted_scores.reshape(-1, 1))
+        hidden_states = hidden_states * state.permuted_scores.reshape(-1, 1)
 
     return torch.ops.hybridep.combine(hidden_states, state.handle, state.num_tokens)
 

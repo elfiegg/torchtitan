@@ -151,8 +151,8 @@ deepseekv3_args = {
         qk_nope_head_dim=128,
         qk_rope_head_dim=64,
         v_head_dim=128,
-        attn_type="flex",
-        attn_mask_type="block_causal",
+        attn_type="sdpa",
+        attn_mask_type="causal",
     ),
 }
 
