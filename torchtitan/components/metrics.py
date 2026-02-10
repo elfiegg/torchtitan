@@ -458,9 +458,17 @@ class MetricsProcessor:
         self.logger.log(metrics, step)
 
         color = self.color
+        if global_avg_loss == -1:
+            self.ntokens_since_last_log = 0
+            self.data_loading_times.clear()
+            self.time_last_log = time.perf_counter()
+            self.device_memory_monitor.reset_peak_stats()
+            return
+        
         logger.info(
             f"{color.red}step: {step:2}  "
             f"{color.green}loss: {global_avg_loss:8.5f}  "
+            f"{color.yellow}iteration_time: {time_end_to_end:7.4f}s "
             f"{color.orange}grad_norm: {grad_norm:7.4f}  "
             f"{color.turquoise}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
             f"({device_mem_stats.max_reserved_pct:.2f}%)  "

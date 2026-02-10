@@ -4,13 +4,28 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""DeepEP distributed communication primitives for MoE."""
+"""
+Expert Parallel Communication Backends for MoE Training.
 
-from .deepep import combine_tokens, dispatch_tokens, DispatchState, sync_combine
+- DeepEP: Support for NVLink8 (H100 / B200)
+- HybridEP: Optimized for GB200/NVLink72
 
-__all__ = [
-    "dispatch_tokens",
-    "combine_tokens",
-    "sync_combine",
-    "DispatchState",
-]
+Backend is selected via job_config.parallelism.expert_parallel_comm_backend.
+HybridEP config is in job_config.parallelism.hybridep.
+
+Usage:
+    from torchtitan.distributed.deepep import deepep, hybridep
+    
+    # For H100/NVLink8:
+    hidden, tpe, state = deepep.dispatch_tokens(...)
+    output = deepep.combine_tokens(hidden, state)
+    
+    # For GB200/NVLink72:
+    hidden, tpe, state = hybridep.dispatch_tokens(...)
+    output = hybridep.combine_tokens(hidden, state)
+"""
+
+from . import deepep, hybridep
+from .deepep import sync_combine
+
+__all__ = ["deepep", "hybridep", "sync_combine"]
