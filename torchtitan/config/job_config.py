@@ -301,6 +301,30 @@ class Training:
 
 
 @dataclass
+class HybridEPConfig:
+    """
+    HybridEP configuration for GB200/NVLink72 systems.
+    Only effective when expert_parallel_comm_backend="hybridep".
+    """
+
+    moe_expert_capacity_factor: float | None = None
+    """
+    Capacity factor for each expert, in the range (0, 1].
+    Controls what fraction of tokens each expert can accept. None means no token will be dropped (default).
+    """
+
+    enable_non_blocking: bool = False
+    """
+    Enable CPU-free non-blocking dispatch mode (required for CUDA graph compatibility).
+    When True, pre-allocates the output buffer as:
+        num_permuted_tokens = num_tokens × EP_group_size × min(num_local_experts, top_k)
+    If moe_expert_capacity_factor is also set, the buffer is further scaled by that factor.
+    When False, uses blocking mode with D2H for dynamic sizing.
+    """
+
+
+
+@dataclass
 class Parallelism:
     data_parallel_replicate_degree: int = 1
     """
@@ -463,16 +487,22 @@ class Parallelism:
     Note that this is still an experimental feature.
     """
 
-    expert_parallel_comm_backend: Literal["standard", "deepep"] = "standard"
+    expert_parallel_comm_backend: Literal["standard", "deepep", "hybridep"] = "standard"
     """
     Expert-parallel communication backend. No effect for non-MoE models or when ep = 1.
 
     - "standard": Uses PyTorch all-to-all collectives (default)
-    - "deepep": Uses DeepEP custom kernels for more efficient communication
+    - "deepep": Uses DeepEP custom kernels for H100/NVLink Switch
+    - "hybridep": Uses HybridEP with TMA optimization for GB200/NVLink72
 
-    DeepEP requires installation:
-    https://github.com/deepseek-ai/DeepEP.
+    DeepEP/HybridEP requires installation:
+    https://github.com/deepseek-ai/DeepEP (checkout to hybrid_ep branch if using HybridEP)
+
+    For HybridEP-specific configuration, see the `hybridep` section below.
     """
+
+    hybridep: HybridEPConfig = field(default_factory=HybridEPConfig)
+    """HybridEP-specific configuration. Only effective when expert_parallel_comm_backend="hybridep"."""
 
 
 @dataclass
