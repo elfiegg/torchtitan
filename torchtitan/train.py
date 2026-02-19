@@ -258,8 +258,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
         # initialize device memory monitor and get peak flops for MFU calculation
         device_memory_monitor = self.metrics_processor.device_memory_monitor
-        gpu_peak_flops = utils.get_peak_flops(device_memory_monitor.device_name)
-        logger.info(f"Peak FLOPS used for computing MFU: {gpu_peak_flops:.3e}")
+        logger.info(f"Peak FLOPS used for computing MFU: {self.metrics_processor.gpu_peak_flops:.3e}")
         device_mem_stats = device_memory_monitor.get_peak_stats()
         logger.info(
             f"{device_type.upper()} memory usage for model: "

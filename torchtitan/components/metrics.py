@@ -376,8 +376,12 @@ class MetricsProcessor:
             else utils.Color()
         )
 
+        fp8_enabled = any(
+            "float8" in c or "mx" in c for c in job_config.model.converters
+        )
         self.gpu_peak_flops = utils.get_peak_flops(
-            self.device_memory_monitor.device_name
+            self.device_memory_monitor.device_name,
+            dtype="fp8" if fp8_enabled else "bf16",
         )
         self.ntokens_since_last_log = 0
         self.data_loading_times = []

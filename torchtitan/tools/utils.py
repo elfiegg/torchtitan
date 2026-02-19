@@ -73,8 +73,9 @@ class GarbageCollection:
         logger.info("[GC] %s took %.2f seconds", reason, time.monotonic() - begin)
 
 
-# hardcoded BF16 type peak flops for NVIDIA A100, H20, H100, H200, B200 GPU and AMD MI250, MI300X, MI325X, MI355X and Intel PVC
-def get_peak_flops(device_name: str) -> float:
+# hardcoded BF16 and FP8 peak flops for NVIDIA A100, H20, H100, H200, B200, GB200, L40S GPU
+# and AMD MI250X, MI300X, MI325X, MI355X and Intel PVC
+def get_peak_flops(device_name: str, dtype: str = "bf16") -> float:
     try:
         # Run the lspci command and capture the output
         result = subprocess.run(["lspci"], stdout=subprocess.PIPE, text=True)
@@ -88,42 +89,59 @@ def get_peak_flops(device_name: str) -> float:
         device_name = " ".join(filtered_lines) or device_name
     except FileNotFoundError as e:
         logger.warning(f"Error running lspci: {e}, fallback to use device_name")
+
+    fp8 = dtype == "fp8"
+
     if "A100" in device_name:
         # data from https://www.nvidia.com/en-us/data-center/a100/
+        # A100 (Ampere) does not natively support FP8
+        if fp8:
+            logger.warning("A100 does not support FP8, falling back to BF16 peak flops")
         return 312e12
     elif "H100" in device_name:
         # data from https://www.nvidia.com/en-us/data-center/h100/
         # NOTE: Specifications are one-half lower without sparsity.
         if "NVL" in device_name:
-            return 835e12
+            return 1671e12 if fp8 else 835e12
         elif "PCIe" in device_name:
-            return 756e12
+            return 1513e12 if fp8 else 756e12
         else:  # for H100 SXM and other variants
-            return 989e12
+            return 1979e12 if fp8 else 989e12
     elif "H200" in device_name:
         # data from https://www.nvidia.com/en-us/data-center/h200/
-        return 989e12
+        return 1979e12 if fp8 else 989e12
     elif "H20" in device_name:
         # NVIDIA H20 is a region-specific GPU variant.
         # Since first-hand specifications do not seem to be readily available on
         # NVIDIA's official global website, we refer to technical reports from
         # Tom's Hardware. The peak BF16/FP16 Tensor performance is reported as
-        # 148 TFLOPS.
+        # 148 TFLOPS; FP8 is 296 TFLOPS.
         # Ref: https://www.tomshardware.com/news/
         # nvidias-latest-regulation-compliant-gpu-for-china-has-been-delayed-to-early-next-year
-        return 148e12
+        return 296e12 if fp8 else 148e12
+    elif "GB200" in device_name:
+        # data from https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
+        # GB200 NVL72 Blackwell GPUs are clocked higher (liquid-cooled, up to 1200W TDP).
+        # Per-GPU with sparsity: FP8 = 10 PFLOPS, BF16 = 5 PFLOPS
+        return 5.0e15 if fp8 else 2.5e15
     elif "B200" in device_name:
         # data from https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
-        return 2.25e15
+        # HGX B200 per-GPU with sparsity: FP8 = 9 PFLOPS, BF16 = 4.5 PFLOPS
+        return 4.5e15 if fp8 else 2.25e15
     elif "MI355X" in device_name:
         # MI355X data from https://www.amd.com/en/products/accelerators/instinct/mi350/mi355x.html
-        return 2500e12
+        return 5000e12 if fp8 else 2500e12
     elif "MI300X" in device_name or "MI325X" in device_name:
         # MI300X data from https://www.amd.com/en/products/accelerators/instinct/mi300/mi300x.html
         # MI325X data from https://www.amd.com/en/products/accelerators/instinct/mi300/mi325x.html
-        return 1300e12
+        return 2600e12 if fp8 else 1300e12
     elif "MI250X" in device_name:
         # data from https://www.amd.com/en/products/accelerators/instinct/mi200/mi250x.html (per GCD)
+        # MI250X (CDNA2) does not natively support FP8
+        if fp8:
+            logger.warning(
+                "No FP8 support for MI250X, falling back to BF16 peak flops"
+            )
         return 191.5e12
     elif "Data Center GPU Max 1550" in device_name:
         # Also known as Ponte Vecchio (PVC).
@@ -133,11 +151,17 @@ def get_peak_flops(device_name: str) -> float:
         # - #ops: 512
         # Full EU mode (i.e. 512 max compute units): 340.8 TFLOPS (BF16)
         # Standard EU mode (i.e. 448 max compute units): 298.2 TFLOPS (BF16)
+        # PVC (Xe HPC) does not natively support FP8
+        if fp8:
+            logger.warning(
+                "No FP8 support for Intel Data Center GPU Max 1550, "
+                "falling back to BF16 peak flops"
+            )
         max_comp_units = torch.xpu.get_device_properties("xpu").max_compute_units
         return 512 * max_comp_units * 1300 * 10**6
     elif "l40s" in device_name:
         # data from: "https://resources.nvidia.com/en-us-l40s/l40s-datasheet-28413"
-        return 362e12
+        return 733e12 if fp8 else 362e12
 
     else:  # for other GPU types, assume A100
         logger.warning(f"Peak flops undefined for: {device_name}, fallback to A100")
