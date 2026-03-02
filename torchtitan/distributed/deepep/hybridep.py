@@ -27,6 +27,7 @@ from torch._library.opaque_object import (
     register_opaque_type,
     get_opaque_type_name,
 )
+from torchtitan.models.moe.utils import get_mxfp8_pad_multiple
 
 
 _hybrid_ep_cls: Any = None  # Lazily-loaded HybridEPBuffer class
@@ -146,14 +147,7 @@ def _dispatch_impl(
 
     # MXFP8 requires per-expert-group padding to multiples of 32 (scaling block size).
     # HybridEP's kernel handles this natively via pad_multiple.
-    from torchtitan.components.quantization import MXFP8_GROUP_ALIGNMENT_SIZE
-    from torchtitan.models.moe.utils import TOKEN_GROUP_ALIGN_SIZE_M
-
-    pad_multiple = (
-        MXFP8_GROUP_ALIGNMENT_SIZE
-        if TOKEN_GROUP_ALIGN_SIZE_M == MXFP8_GROUP_ALIGNMENT_SIZE
-        else None
-    )
+    pad_multiple = get_mxfp8_pad_multiple()
 
     hidden, scores, _, tokens_per_expert, handle = _buffer.dispatch_with_permute(
         hidden=x,
@@ -263,11 +257,16 @@ def _combine_backward(ctx, grad_combined):
     if dispatch_handle is None or dispatch_handle.value is None:
         raise RuntimeError("DispatchHandle not found in combine backward")
 
+    # Must pass pad_multiple so backward gradients entering ScaledGroupedMM
+    # (torchao MXFP8) also have rows aligned to 32.
+    pad_multiple = get_mxfp8_pad_multiple()
+
     grad_x, _, _, _, _ = _buffer.dispatch_with_permute(
         hidden=grad_combined,
         scaling_factor=None,
         handle=dispatch_handle.value,
         num_permuted_tokens=ctx.num_permuted_tokens,
+        pad_multiple=pad_multiple,
     )
     # Gradients: x, handle, num_tokens
     return grad_x, None, None

@@ -19,6 +19,7 @@ MXFP8_GROUP_ALIGNMENT_SIZE = 32
 
 from torchtitan.config import JobConfig
 from torchtitan.distributed import ParallelDims
+from torchtitan.tools.logging import logger
 
 from torchtitan.protocols.model_converter import ModelConverter
 
@@ -36,24 +37,21 @@ class QuantizationConverter(ModelConverter):
     @staticmethod
     def _validate(job_config: JobConfig):
         """
-        Validates that the job config uses the same quantization type for dense and MoE layers.
+        Validates quantization converters. Mixing types (e.g. mx + te) is allowed but logged.
         """
-        # TODO: Explore supporting applying different quantization methods to dense and MoE layers.
         # quantization converter format:
-        # `quantize.[linear | grouped_mm].[float8 | mx]`
+        # `quantize.[linear | grouped_mm].[float8 | mx | te]`
         quantization_type = lambda converter: converter.split(".")[-1]
-        existing_quantization_converter: str | None = None
+        seen_types = set()
         for converter in job_config.model.converters:
             if "quantize" in converter:
-                if existing_quantization_converter is None:
-                    existing_quantization_converter = converter
-                else:
-                    assert quantization_type(converter) == quantization_type(
-                        existing_quantization_converter
-                    ), (
-                        "Cannot combine model converters with different quantization types: "
-                        f"'{quantization_type(converter)}' and '{quantization_type(existing_quantization_converter)}'"
+                qtype = quantization_type(converter)
+                if seen_types and qtype not in seen_types:
+                    logger.warning(
+                        "Using multiple quantization types (%s); this is supported but ensure compatibility.",
+                        sorted(seen_types | {qtype}),
                     )
+                seen_types.add(qtype)
 
 
 # Import to register quantization modules as ModelConverter

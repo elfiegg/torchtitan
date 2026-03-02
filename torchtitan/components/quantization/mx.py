@@ -53,12 +53,16 @@ class MXLinearConverter(QuantizationConverter):
 
         # Configure MXFP8
         from torchao.prototype.mx_formats.config import (
+            MXFP8Dim0CastKernelChoice,
             MXFP8Dim1CastKernelChoice,
             MXLinearConfig as TorchAOMXLinearConfig,
         )
 
-        mx_job_config: TorchAOMXLinearConfig = job_config.quantize.linear.mx
+        mx_job_config = job_config.quantize.linear.mx
         config = TorchAOMXLinearConfig.from_recipe_name(mx_job_config.recipe_name)
+        config.mxfp8_dim0_cast_kernel_choice = MXFP8Dim0CastKernelChoice[
+            mx_job_config.mxfp8_dim0_cast_kernel_choice.upper()
+        ]
         config.mxfp8_dim1_cast_kernel_choice = MXFP8Dim1CastKernelChoice[
             mx_job_config.mxfp8_dim1_cast_kernel_choice.upper()
         ]
@@ -142,9 +146,10 @@ class MXGroupedMMConverter(QuantizationConverter):
         """
         if not self.enabled:
             return
-        from torchao.prototype.moe_training.conversion_utils import (
-            MoEScalingType,
-            MoETrainingConfig,
+
+        from torchao.prototype.moe_training.config import (
+            MXFP8GroupedMMConfig,
+            MXFP8GroupedMMRecipe,
         )
         from torchao.quantization.quant_api import quantize_
 
@@ -154,7 +159,15 @@ class MXGroupedMMConverter(QuantizationConverter):
                     return True
             return False
 
-        config = MoETrainingConfig(scaling_type=MoEScalingType.MXFP8)
+        # Map torchtitan recipe names to torchao MXFP8GroupedMMRecipe values
+        _RECIPE_MAP = {
+            "mxfp8": MXFP8GroupedMMRecipe.MXFP8_RCEIL,
+            "mxfp8_rceil": MXFP8GroupedMMRecipe.MXFP8_RCEIL,
+            "mxfp8_rceil_wgrad_with_hp": MXFP8GroupedMMRecipe.MXFP8_RCEIL_WGRAD_WITH_HP,
+            "mxfp8_emulated_rceil": MXFP8GroupedMMRecipe.MXFP8_EMULATED_RCEIL,
+        }
+        recipe = _RECIPE_MAP[self.recipe_name]
+        config = MXFP8GroupedMMConfig.from_recipe(recipe)
         quantize_(model, config=config, filter_fn=moe_module_filter_fn)
         logger.info(
             f"Converted MoE layers matching FQNS {self.moe_fqns} "

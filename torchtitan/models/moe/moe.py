@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -420,28 +419,12 @@ class MoE(nn.Module):
 
         num_experts = moe_args.num_experts
 
-        # USE_TE_DIRECT_GEMM=1 → bypass GroupedLinear, call general_grouped_gemm directly.
-        # This gives ~3× lower CPU overhead for MXFP8 grouped GEMMs.
-        if os.environ.get("USE_TE_DIRECT_GEMM", "0") == "1":
-            from .moe_te import TEGroupedExperts
-
-            enable_fp8 = os.environ.get("TE_DIRECT_GEMM_FP8", "1") == "1"
-            self.experts = TEGroupedExperts(
-                dim=dim,
-                hidden_dim=hidden_dim,
-                num_experts=num_experts,
-                enable_fp8=enable_fp8,
-            )
-            logger.info(
-                f"MoE: Using TEGroupedExperts (direct GEMM, fp8={enable_fp8})"
-            )
-        else:
-            self.experts = GroupedExperts(
-                dim=dim,
-                hidden_dim=hidden_dim,
-                num_experts=num_experts,
-                use_grouped_mm=moe_args.use_grouped_mm,
-            )
+        self.experts = GroupedExperts(
+            dim=dim,
+            hidden_dim=hidden_dim,
+            num_experts=num_experts,
+            use_grouped_mm=moe_args.use_grouped_mm,
+        )
         self.router = TokenChoiceTopKRouter(
             dim=dim,
             num_experts=num_experts,

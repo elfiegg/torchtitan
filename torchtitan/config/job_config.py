@@ -787,10 +787,17 @@ class Float8GroupedMM:
 
 @dataclass
 class MXLinear:
+    mxfp8_dim0_cast_kernel_choice: Literal["triton", "torch"] = "torch"
+    """
+    Which kernel to use for mxfp8 casting along dim0.
+    Triton is recommended for best performance on SM100+.
+
+    Example: --quantize.linear.mx.mxfp8_dim0_cast_kernel_choice="triton"
+    """
+
     mxfp8_dim1_cast_kernel_choice: Literal["triton", "cuda", "torch"] = "triton"
     """
-    Temp work around for inductor performance gap.
-
+    Which kernel to use for mxfp8 casting along dim1.
     CUDA is recommended for best performance.
 
     Example: --quantize.linear.mx.mxfp8_dim1_cast_kernel_choice="cuda"
@@ -814,11 +821,16 @@ class MXLinear:
 
 @dataclass
 class MXGroupedMM:
-    recipe_name: Literal["mxfp8"] = "mxfp8"
+    recipe_name: Literal[
+        "mxfp8",
+        "mxfp8_rceil",
+        "mxfp8_rceil_wgrad_with_hp",
+        "mxfp8_emulated_rceil",
+    ] = "mxfp8"
     """
-    Quantization recipe name for grouped GEMMs. Options: ["mxfp8"]
+    Quantization recipe name for grouped GEMMs.
 
-    Example: --quantize.grouped_mm.mx.recipe_name="mxfp8"
+    Example: --quantize.grouped_mm.mx.recipe_name="mxfp8_rceil_wgrad_with_hp"
     """
 
     fqns: list[str] | str = field(default_factory=list)
