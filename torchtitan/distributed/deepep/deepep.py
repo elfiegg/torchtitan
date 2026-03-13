@@ -290,9 +290,23 @@ def get_hidden_bytes(x: torch.Tensor) -> int:
     return x.size(1) * max(x.element_size(), 2)
 
 
-def get_buffer(group: ProcessGroup, hidden_bytes: int) -> Buffer:
-    """Get or create a buffer for all-to-all communication."""
+def get_buffer(group: ProcessGroup, hidden_bytes: int, use_rdma: bool | None = None) -> Buffer:
+    """Get or create a buffer for all-to-all communication.
+
+    Args:
+        group: The EP process group.
+        hidden_bytes: Bytes per token (hidden_dim * element_size).
+        use_rdma: Whether to allocate RDMA (inter-node, NVSHMEM) buffers.
+            - True: always allocate RDMA bytes (required for multi-node H100).
+            - False: skip RDMA, NVLink-only (suitable for A100 or single-node).
+            - None (default): auto-detect — skips RDMA when all ranks are
+              on the same node, enabling A100 single-node use without NVSHMEM.
+    """
     global _buffer
+
+    if use_rdma is None:
+        use_rdma = group.size() > torch.cuda.device_count()
+
     num_nvl_bytes, num_rdma_bytes = 0, 0
     for config in (
         Buffer.get_dispatch_config(group.size()),
@@ -301,9 +315,10 @@ def get_buffer(group: ProcessGroup, hidden_bytes: int) -> Buffer:
         num_nvl_bytes = max(
             config.get_nvl_buffer_size_hint(hidden_bytes, group.size()), num_nvl_bytes
         )
-        num_rdma_bytes = max(
-            config.get_rdma_buffer_size_hint(hidden_bytes, group.size()), num_rdma_bytes
-        )
+        if use_rdma:
+            num_rdma_bytes = max(
+                config.get_rdma_buffer_size_hint(hidden_bytes, group.size()), num_rdma_bytes
+            )
 
     if (
         _buffer is None
@@ -397,6 +412,7 @@ def dispatch_tokens(
     num_experts: int,
     group: ProcessGroup,
     score_before_experts: bool = True,
+    use_rdma: bool | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, DispatchState]:
     """Dispatch tokens to experts via DeepEP.
 
@@ -408,6 +424,9 @@ def dispatch_tokens(
         num_experts: Total number of experts across all ranks
         group: EP process group
         score_before_experts: If True, apply routing scores before expert computation.
+        use_rdma: Whether to use RDMA (NVSHMEM) buffers for inter-node communication.
+            Defaults to None (auto-detect: False for intra-node groups, True otherwise).
+            Set to False explicitly for A100 or any setup without NVSHMEM support.
 
     Returns:
         (permuted_tokens, tokens_per_expert, state_for_combine)
@@ -422,7 +441,7 @@ def dispatch_tokens(
     if top_scores.dtype != torch.float32:
         top_scores = top_scores.float()
 
-    buffer = get_buffer(group, get_hidden_bytes(hidden_states))
+    buffer = get_buffer(group, get_hidden_bytes(hidden_states), use_rdma=use_rdma)
 
     # Calculate dispatch layout before actual dispatch
     (
