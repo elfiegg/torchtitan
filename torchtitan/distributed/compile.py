@@ -37,8 +37,32 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig) -> None:
         True  # pyrefly: ignore [bad-assignment]
     )
 
+    # We need fullgraph=False (not the upstream default True) because the
+    # DeepEP MoE all-to-all path used by all of our 671B benchmark variants
+    # invokes ``torch.utils._python_dispatch._disable_current_modes()`` from
+    # inside ``torchtitan.distributed.deepep.deepep.dispatch_tokens``. The
+    # context manager's ``__init__`` evaluates
+    # ``_len_torch_dispatch_stack()``, which is a torch.* op that returns
+    # ``int`` (not Tensor). Under ``fullgraph=True``, Dynamo refuses to
+    # include this in the FX output graph and raises
+    # ``torch._dynamo.exc.Unsupported: torch.* op returned non-Tensor`` --
+    # the failure surfaces specifically when ``apply_ac`` (mode='full') has
+    # wrapped the block in ``checkpoint_wrapper`` and compile is tracing
+    # through the checkpoint HOP, but it would happen with either
+    # apply_ac/apply_compile ordering since the offending call lives inside
+    # the block.forward path that compile traces.
+    #
+    # Upstream's ``skip_fwd_side_effects_in_bwd_under_checkpoint = True``
+    # (above) takes care of the AC-side issues; this fullgraph=False knob
+    # is independent and only matters when MoE comm_backend in
+    # {'deepep', 'hybridep'}. We keep it on globally for simplicity --
+    # graph breaks at the dispatch boundary are unavoidable today anyway.
+    #
+    # TODO: upstream a fix that either marks ``_len_torch_dispatch_stack``
+    # as a Dynamo "constant scalar" or refactors ``dispatch_tokens`` to
+    # avoid ``_disable_current_modes`` on the hot path.
     # pyrefly: ignore [missing-attribute]
     for layer_id, transformer_block in model.layers.named_children():
-        transformer_block.compile(backend=compile_config.backend, fullgraph=True)
+        transformer_block.compile(backend=compile_config.backend, fullgraph=False)
 
     logger.info("Compiling each TransformerBlock with torch.compile")
