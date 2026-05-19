@@ -128,6 +128,105 @@ def deepseek_v3_16b() -> Trainer.Config:
     )
 
 
+def _deepseek_v3_16b_smoke(
+    *,
+    precision: str = "bf16",
+    attn_backend: str = "cudnn",
+    moe_comm_backend: str = "deepep",
+) -> Trainer.Config:
+    """Compact 16B smoke variant used to exercise the same code paths as
+    `_deepseek_v3_671b_with_backends` on a 2-node / 16-GPU footprint.
+
+    Exists purely to validate the LLMB benchmarking branch end-to-end
+    (cuDNN attention, DeepEP/HybridEP, MXFP8 grouped GEMMs,
+    `compile=[loss, model]` with activation_checkpoint.mode='full', and
+    `fullgraph=True` via the upstream dynamo skip flag) without booking a
+    256-GPU baseline run. The 16B flavour has expert_parallel_degree=8
+    which matches 2x4-GPU GB300 or 2x8-GPU B200/B300 exactly.
+    """
+    if precision not in _PRECISION_TO_CONVERTERS:
+        raise ValueError(
+            f"Unsupported precision={precision!r}; expected one of "
+            f"{sorted(_PRECISION_TO_CONVERTERS)}."
+        )
+
+    compile_config = CompileConfig(enable=True, components=["loss", "model"])
+    model_compile_enabled = (
+        compile_config.enable and "model" in compile_config.components
+    )
+
+    if precision == "fp8":
+        quant_configs = [
+            MXFP8LinearConverter.Config(
+                recipe_name="mxfp8_rceil",
+                model_compile_enabled=model_compile_enabled,
+            ),
+            MXFP8GroupedExpertsConverter.Config(
+                recipe_name="mxfp8_rceil",
+                model_compile_enabled=model_compile_enabled,
+            ),
+        ]
+    else:
+        quant_configs = None
+
+    return Trainer.Config(
+        loss=ChunkedCELoss.Config(),
+        hf_assets_path="./assets/hf/deepseek-moe-16b-base",
+        model_spec=model_registry(
+            "16B",
+            attn_backend=attn_backend,
+            moe_comm_backend=moe_comm_backend,
+            converters=quant_configs,
+        ),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=2.2e-4),
+        lr_scheduler=LRSchedulersContainer.Config(
+            warmup_steps=10,
+            decay_ratio=0.8,
+            decay_type="cosine",
+            min_lr_factor=0.1,
+        ),
+        training=TrainingConfig(
+            local_batch_size=2,
+            seq_len=2048,
+            steps=20,
+        ),
+        parallelism=ParallelismConfig(
+            pipeline_parallel_schedule="1F1B",
+            expert_parallel_degree=8,
+        ),
+        checkpoint=CheckpointManager.Config(interval=1000),
+        activation_checkpoint=ActivationCheckpointConfig(
+            mode="full",
+        ),
+        compile=compile_config,
+    )
+
+
+def deepseek_v3_16b_deepep_cudnn_bf16() -> Trainer.Config:
+    return _deepseek_v3_16b_smoke(
+        precision="bf16", attn_backend="cudnn", moe_comm_backend="deepep"
+    )
+
+
+def deepseek_v3_16b_deepep_cudnn() -> Trainer.Config:
+    return _deepseek_v3_16b_smoke(
+        precision="fp8", attn_backend="cudnn", moe_comm_backend="deepep"
+    )
+
+
+def deepseek_v3_16b_hybridep_cudnn_bf16() -> Trainer.Config:
+    return _deepseek_v3_16b_smoke(
+        precision="bf16", attn_backend="cudnn", moe_comm_backend="hybridep"
+    )
+
+
+def deepseek_v3_16b_hybridep_cudnn() -> Trainer.Config:
+    return _deepseek_v3_16b_smoke(
+        precision="fp8", attn_backend="cudnn", moe_comm_backend="hybridep"
+    )
+
+
 def deepseek_v3_671b() -> Trainer.Config:
     """Upstream 671B baseline (FP8 Float8 + flex attention)."""
     compile_config = CompileConfig(enable=True, components=["loss"])
