@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Literal
 
 from torchtitan.models.common.attention import (
+    CuDNNAttention,
     FlexAttention,
     FusedQKVLinear,
     GQAttention,
@@ -39,6 +40,8 @@ def get_attention_config(
     """Map backend string to (inner_attention config, mask_type)."""
     if backend == "sdpa":
         return ScaledDotProductAttention.Config(), "causal"
+    elif backend == "cudnn":
+        return CuDNNAttention.Config(), "causal"
     elif backend == "flex":
         return FlexAttention.Config(), "block_causal"
     elif backend == "flex_flash":

@@ -39,6 +39,7 @@ from torchtitan.protocols.module import Module
 
 
 __all__ = [
+    "CuDNNAttention",
     "FlexAttention",
     "BaseQKVLinear",
     "FusedQKVLinear",
@@ -297,6 +298,19 @@ class ScaledDotProductAttention(Module):
             )
         # Transpose back to (bs, seq, heads, dim)
         return out.transpose(1, 2)
+
+
+class CuDNNAttention(ScaledDotProductAttention):
+    """SDPA pinned to the cuDNN backend.
+
+    Behaves like :class:`ScaledDotProductAttention` but restricts the SDPA
+    backend list to ``CUDNN_ATTENTION`` only. This forces cuDNN to be used
+    and raises rather than silently falling back to FlashAttention/Math,
+    which is the desired behaviour on Blackwell-class GPUs (B200, GB200,
+    B300, GB300) where cuDNN's fused attention is the fastest path.
+    """
+
+    sdpa_backends: list[SDPBackend] = [SDPBackend.CUDNN_ATTENTION]
 
 
 def get_causal_mask_mod() -> _mask_mod_signature:
