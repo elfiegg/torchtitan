@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
+
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import GroupedExperts
 from torchtitan.models.common.token_dispatcher import (
@@ -48,9 +50,20 @@ def swap_token_dispatcher(config, pad_multiple: int) -> None:
         )
     elif isinstance(td, DeepEPTokenDispatcher.Config):
         if td.comm_backend == "deepep":
+            # DeepEP-main has no post-dispatch padding hook (only HybridEP
+            # does). For Float8/MXFP8 GroupedExperts we rely on the caller
+            # to either (a) use HybridEP, or (b) opt into running the
+            # grouped GEMM on unpadded per-expert token groups by setting
+            # TT_DEEPEP_ALLOW_UNPADDED_FP8=1. With debug.moe_force_load_balance
+            # the groups are uniform so kernel alignment is fine.
+            if os.environ.get("TT_DEEPEP_ALLOW_UNPADDED_FP8", "0") == "1":
+                # Skip the swap; keep the original (unpadded) dispatcher.
+                return
             raise ValueError(
                 "DeepEP does not support pad_multiple. "
-                "Use hybridep or standard comm backend instead."
+                "Use hybridep or standard comm backend instead, or set "
+                "TT_DEEPEP_ALLOW_UNPADDED_FP8=1 to run the quantized "
+                "grouped GEMM on unpadded token groups."
             )
         config.token_dispatcher = DeepEPTokenDispatcher.Config(
             num_experts=td.num_experts,
