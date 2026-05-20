@@ -44,19 +44,23 @@ class MXFP8LinearConverter(QuantizationConverter):
 
     @dataclass(kw_only=True, slots=True)
     class Config(QuantizationConverter.Config):
-        # LLMB: widened from Literal["mxfp8_rceil"] to allow mxfp8_cublas, the
-        # cuBLAS-native MXFP8 recipe required for B200/B300/GB200/GB300 peak
-        # TFLOPS. Without this widening, tyro rejects `--quantize.linear.mx.
-        # recipe_name=mxfp8_cublas` at CLI parse time.
+        # Must match a value of ``MXFP8TrainingRecipe`` in torchao
+        # (``prototype/moe_training/config.py``). cuBLAS dispatch lives inside
+        # ``mxfp8_rceil`` -> ``KernelPreference.AUTO`` on SM100+; there is no
+        # separate ``mxfp8_cublas`` recipe in this API.
         recipe_name: Literal[
-            "mxfp8_rceil", "mxfp8_cublas", "mxfp8_cublas_rceil"
+            "mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp", "mxfp8_emulated_rceil"
         ] = "mxfp8_rceil"
         """
-        Quantization recipe name. Options: ["mxfp8_rceil", "mxfp8_cublas", "mxfp8_cublas_rceil"]
+        Quantization recipe name. Options: ["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp", "mxfp8_emulated_rceil"]
 
-        - mxfp8_rceil: MXFP8 dynamic quantization with RCEIL rounding mode when computing the e8m0 scale factors.
-        - mxfp8_cublas: cuBLAS-native MXFP8 path; fastest on Blackwell (B200/B300/GB200/GB300).
-        - mxfp8_cublas_rceil: cuBLAS path with RCEIL scale rounding.
+        - mxfp8_rceil: MXFP8 dynamic quantization with RCEIL rounding mode when
+          computing the e8m0 scale factors; dispatches to ``torch._scaled_grouped_mm``
+          (cuBLAS-native scaled grouped GEMM) on SM100+.
+        - mxfp8_rceil_wgrad_with_hp: same as mxfp8_rceil but computes the weight
+          gradient in high precision.
+        - mxfp8_emulated_rceil: emulated MXFP8 (fp32 dequant + bf16 gemm); for
+          correctness debugging / non-SM100 hardware.
         """
 
         fqns: list[str] = field(default_factory=list)
@@ -157,18 +161,22 @@ class MXFP8GroupedExpertsConverter(QuantizationConverter):
 
     @dataclass(kw_only=True, slots=True)
     class Config(QuantizationConverter.Config):
-        # LLMB: widened from Literal["mxfp8_rceil"]. mxfp8_cublas is the fast
-        # cuBLAS-native grouped-GEMM path used by the LLMB DeepSeek-V3 recipe.
+        # Must match a value of ``MXFP8TrainingRecipe`` in torchao.
+        # See MXFP8LinearConverter.Config above for why ``mxfp8_cublas`` is not
+        # in this list.
         recipe_name: Literal[
-            "mxfp8_rceil", "mxfp8_cublas", "mxfp8_cublas_rceil"
+            "mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp", "mxfp8_emulated_rceil"
         ] = "mxfp8_rceil"
         """
         Quantization recipe name for grouped GEMMs.
-        Options: ["mxfp8_rceil", "mxfp8_cublas", "mxfp8_cublas_rceil"]
+        Options: ["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp", "mxfp8_emulated_rceil"]
 
-        - mxfp8_rceil: MXFP8 dynamic quantization with RCEIL rounding mode when computing the e8m0 scale factors.
-        - mxfp8_cublas: cuBLAS-native MXFP8 grouped GEMM; fastest on Blackwell.
-        - mxfp8_cublas_rceil: cuBLAS path with RCEIL scale rounding.
+        - mxfp8_rceil: MXFP8 dynamic quantization with RCEIL rounding mode when
+          computing the e8m0 scale factors; dispatches to ``torch._scaled_grouped_mm``
+          (cuBLAS-native scaled grouped GEMM) on SM100+ (B200/B300/GB200/GB300).
+        - mxfp8_rceil_wgrad_with_hp: same as mxfp8_rceil but computes the weight
+          gradient in high precision.
+        - mxfp8_emulated_rceil: emulated MXFP8 for correctness debugging.
         """
 
     def __init__(self, config: Config):
