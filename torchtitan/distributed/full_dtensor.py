@@ -20,7 +20,16 @@ from typing import Any
 import torch
 import torch.nn as nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.fsdp import DataParallelMeshDims
+
+try:
+    from torch.distributed.fsdp import DataParallelMeshDims
+except ImportError:
+    # torch nightlies older than 2026-03-19 (pytorch/pytorch#176334) do not
+    # ship ``DataParallelMeshDims``. The full_dtensor code path below is dead
+    # code for any LLMB recipe that disables ``parallelism.full_dtensor``
+    # (e.g. DeepSeek-V3, which explicitly raises NotImplementedError on it),
+    # so a stub is enough to let validate.py / trainer.py import this module.
+    DataParallelMeshDims = None  # type: ignore[assignment,misc]
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from torch.distributed.tensor.placement_types import Placement
 

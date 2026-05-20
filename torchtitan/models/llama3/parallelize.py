@@ -12,10 +12,17 @@ import torch.nn as nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import (
     CPUOffloadPolicy,
-    DataParallelMeshDims,
     fully_shard,
     MixedPrecisionPolicy,
 )
+
+try:
+    from torch.distributed.fsdp import DataParallelMeshDims
+except ImportError:
+    # See torchtitan/distributed/full_dtensor.py for context: torch nightlies
+    # older than 2026-03-19 (pytorch/pytorch#176334) don't ship this symbol.
+    # Only the Llama3 full_dtensor path uses it; LLMB DeepSeek-V3 never does.
+    DataParallelMeshDims = None  # type: ignore[assignment,misc]
 
 from torchtitan.config import (
     ActivationCheckpointConfig,
