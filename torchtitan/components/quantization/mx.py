@@ -44,11 +44,19 @@ class MXFP8LinearConverter(QuantizationConverter):
 
     @dataclass(kw_only=True, slots=True)
     class Config(QuantizationConverter.Config):
-        recipe_name: Literal["mxfp8_rceil"] = "mxfp8_rceil"
+        # LLMB: widened from Literal["mxfp8_rceil"] to allow mxfp8_cublas, the
+        # cuBLAS-native MXFP8 recipe required for B200/B300/GB200/GB300 peak
+        # TFLOPS. Without this widening, tyro rejects `--quantize.linear.mx.
+        # recipe_name=mxfp8_cublas` at CLI parse time.
+        recipe_name: Literal[
+            "mxfp8_rceil", "mxfp8_cublas", "mxfp8_cublas_rceil"
+        ] = "mxfp8_rceil"
         """
-        Quantization recipe name for grouped GEMMs. Options: ["mxfp8_rceil"]
+        Quantization recipe name. Options: ["mxfp8_rceil", "mxfp8_cublas", "mxfp8_cublas_rceil"]
 
         - mxfp8_rceil: MXFP8 dynamic quantization with RCEIL rounding mode when computing the e8m0 scale factors.
+        - mxfp8_cublas: cuBLAS-native MXFP8 path; fastest on Blackwell (B200/B300/GB200/GB300).
+        - mxfp8_cublas_rceil: cuBLAS path with RCEIL scale rounding.
         """
 
         fqns: list[str] = field(default_factory=list)
@@ -149,11 +157,18 @@ class MXFP8GroupedExpertsConverter(QuantizationConverter):
 
     @dataclass(kw_only=True, slots=True)
     class Config(QuantizationConverter.Config):
-        recipe_name: Literal["mxfp8_rceil"] = "mxfp8_rceil"
+        # LLMB: widened from Literal["mxfp8_rceil"]. mxfp8_cublas is the fast
+        # cuBLAS-native grouped-GEMM path used by the LLMB DeepSeek-V3 recipe.
+        recipe_name: Literal[
+            "mxfp8_rceil", "mxfp8_cublas", "mxfp8_cublas_rceil"
+        ] = "mxfp8_rceil"
         """
-        Quantization recipe name for grouped GEMMs. Options: ["mxfp8_rceil"]
+        Quantization recipe name for grouped GEMMs.
+        Options: ["mxfp8_rceil", "mxfp8_cublas", "mxfp8_cublas_rceil"]
 
         - mxfp8_rceil: MXFP8 dynamic quantization with RCEIL rounding mode when computing the e8m0 scale factors.
+        - mxfp8_cublas: cuBLAS-native MXFP8 grouped GEMM; fastest on Blackwell.
+        - mxfp8_cublas_rceil: cuBLAS path with RCEIL scale rounding.
         """
 
     def __init__(self, config: Config):

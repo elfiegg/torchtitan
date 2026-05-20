@@ -47,6 +47,14 @@ from torchtitan.trainer import Trainer
 from . import model_registry
 
 
+# LLMB: default MXFP8 recipe for all LLMB-benchmarking deepseek_v3 variants.
+# mxfp8_cublas is the cuBLAS-native MXFP8 grouped-GEMM path required to hit
+# ~800 TFLOPS/GPU on B200/B300/GB200/GB300 (matches the pre-refactor dev recipe).
+# Override per-converter at the CLI via
+# `--quantize.linear.mx.recipe_name=...` / `--quantize.moe.mx.recipe_name=...`.
+_LLMB_MXFP8_RECIPE: str = "mxfp8_cublas"
+
+
 def deepseek_v3_debugmodel() -> Trainer.Config:
     return Trainer.Config(
         loss=ChunkedCELoss.Config(),
@@ -158,11 +166,11 @@ def _deepseek_v3_16b_smoke(
     if precision == "fp8":
         quant_configs = [
             MXFP8LinearConverter.Config(
-                recipe_name="mxfp8_rceil",
+                recipe_name=_LLMB_MXFP8_RECIPE,
                 model_compile_enabled=model_compile_enabled,
             ),
             MXFP8GroupedExpertsConverter.Config(
-                recipe_name="mxfp8_rceil",
+                recipe_name=_LLMB_MXFP8_RECIPE,
                 model_compile_enabled=model_compile_enabled,
             ),
         ]
@@ -296,7 +304,11 @@ def deepseek_v3_671b() -> Trainer.Config:
 #                                          NVL72 domains, used for GB200/
 #                                          GB300.
 #   - `precision`           : "fp8" -> MXFP8 (Linear + GroupedExperts) using
-#                             the mxfp8_rceil recipe (Blackwell native).
+#                             the mxfp8_cublas recipe (Blackwell native, cuBLAS
+#                             grouped GEMMs - fastest path on B200/B300/GB200/
+#                             GB300). Override via
+#                             `--quantize.linear.mx.recipe_name=<name>` and
+#                             `--quantize.moe.mx.recipe_name=<name>`.
 #                             "bf16" -> no converters.
 #   - `local_batch_size=8`  : larger micro-batch to soak up Blackwell HBM.
 #                             The LLMB launcher overrides this via
@@ -321,8 +333,9 @@ _PRECISION_TO_CONVERTERS = {
     # MXFP8 on Blackwell:
     #   - MXFP8LinearConverter (no filter_fqns: convert all eligible Linears)
     #   - MXFP8GroupedExpertsConverter (group GEMM in MXFP8 too)
-    # Both use the mxfp8_rceil recipe, which is the Blackwell-native
-    # block-scaled FP8 with rounded-ceil scaling factors.
+    # Both use the mxfp8_cublas recipe (cuBLAS-native MXFP8 grouped GEMM),
+    # the fastest Blackwell path. Override per-converter via
+    # `--quantize.linear.mx.recipe_name=...` / `--quantize.moe.mx.recipe_name=...`.
     "fp8": "mxfp8",
     "bf16": None,
 }
@@ -348,11 +361,11 @@ def _deepseek_v3_671b_with_backends(
     if precision == "fp8":
         quant_configs = [
             MXFP8LinearConverter.Config(
-                recipe_name="mxfp8_rceil",
+                recipe_name=_LLMB_MXFP8_RECIPE,
                 model_compile_enabled=model_compile_enabled,
             ),
             MXFP8GroupedExpertsConverter.Config(
-                recipe_name="mxfp8_rceil",
+                recipe_name=_LLMB_MXFP8_RECIPE,
                 model_compile_enabled=model_compile_enabled,
             ),
         ]

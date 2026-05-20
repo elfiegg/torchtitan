@@ -209,6 +209,10 @@ class DeepSeekV3Model(Decoder):
                 layer_cfg.attention.rope_factor = self.rope.rope_factor
                 layer_cfg.attention.rope_original_seq_len = self.rope.original_seq_len
 
+            # LLMB: read once outside the loop; same overrides apply to every
+            # MoE layer with comm_backend="hybridep".
+            hybridep_overrides = getattr(parallelism, "hybridep", None)
+
             for layer_cfg in self.layers:
                 if layer_cfg.moe is not None:
                     layer_cfg.moe.router._debug_force_load_balance = (
@@ -226,6 +230,29 @@ class DeepSeekV3Model(Decoder):
                         raise ValueError(
                             f"{comm_backend.upper()} requires expert parallelism "
                             "(expert_parallel_degree > 1)."
+                        )
+
+                    # LLMB: fold parallelism.hybridep.* CLI overrides into the
+                    # DeepEPTokenDispatcher.Config.non_blocking_capacity_factor.
+                    # `enable_non_blocking=True` + `moe_expert_capacity_factor=<f>`
+                    # together select HybridEP's CPU-free non-blocking dispatch
+                    # path with capacity factor <f> (matches the dev-branch
+                    # JobConfig surface used by the LLMB recipe).
+                    if (
+                        comm_backend == "hybridep"
+                        and hybridep_overrides is not None
+                        and hybridep_overrides.enable_non_blocking
+                    ):
+                        if hybridep_overrides.moe_expert_capacity_factor is None:
+                            raise ValueError(
+                                "parallelism.hybridep.enable_non_blocking=True "
+                                "requires parallelism.hybridep.moe_expert_"
+                                "capacity_factor to be set (HybridEP "
+                                "non-blocking dispatch needs an upfront output "
+                                "buffer size)."
+                            )
+                        layer_cfg.moe.experts.token_dispatcher.non_blocking_capacity_factor = (
+                            hybridep_overrides.moe_expert_capacity_factor
                         )
 
             if parallelism.context_parallel_degree > 1 and not isinstance(

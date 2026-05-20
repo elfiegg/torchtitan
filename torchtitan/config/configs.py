@@ -80,6 +80,29 @@ class TrainingConfig:
 
 
 @dataclass(kw_only=True, slots=True)
+class HybridEPConfig:
+    """LLMB: CLI overrides for HybridEP (MNNVL fabric) MoE dispatch.
+
+    These are read by the deepseek_v3 model spec at validate-time and merged
+    into the per-layer DeepEPTokenDispatcher.Config.non_blocking_capacity_factor
+    used by torchtitan.distributed.deepep.hybridep.dispatch_tokens().
+    """
+
+    enable_non_blocking: bool = False
+    """If True, run HybridEP dispatch in CPU-free non_blocking mode. Requires
+    `moe_expert_capacity_factor` to also be set (HybridEP needs an upfront
+    output-buffer size when no D2H sync is allowed)."""
+
+    moe_expert_capacity_factor: float | None = None
+    """Per-expert token capacity factor in (0, 1]. When `enable_non_blocking=True`
+    this sizes the fused-permute output tensor as
+    `num_tokens * ep_size * min(num_local_experts, top_k) * moe_expert_capacity_factor`
+    (aligned for MXFP8). Tokens overflowing this limit are silently dropped.
+    Safe in practice when forced load balancing keeps token distribution roughly
+    uniform. None disables capacity-based sizing."""
+
+
+@dataclass(kw_only=True, slots=True)
 class ParallelismConfig:
     data_parallel_replicate_degree: int = 1
     """
@@ -229,6 +252,15 @@ class ParallelismConfig:
     EP borrows ranks from FSDP and TP: efsdp = dp_shard * cp * tp / ep.
     pp and dp_replicate are outer dimensions unaffected by this constraint.
     """
+
+    # LLMB: nested HybridEP overrides exposed at the CLI as
+    # `--parallelism.hybridep.<field>`. Equivalent to the pre-refactor dev branch
+    # JobConfig surface. Values here override DeepEPTokenDispatcher defaults
+    # baked into the model registry; see deepseek_v3/__init__.py for how they
+    # are folded into `non_blocking_capacity_factor` before model construction.
+    hybridep: HybridEPConfig = field(default_factory=HybridEPConfig)
+    """HybridEP-specific overrides; only effective when the MoE comm_backend
+    is `hybridep`. Has no effect for `deepep` or `standard` backends."""
 
 
 @dataclass(kw_only=True, slots=True)
