@@ -17,6 +17,70 @@ from torchtitan.tools.utils import has_cuda_capability
 from .utils import swap_token_dispatcher
 
 
+def _patch_torchao_fsdp_pre_all_gather() -> None:
+    """Patch TorchAO's MXFP8/Float8 wrapper base class to pad along dim 0 in
+    ``fsdp_pre_all_gather`` when the parameter is unevenly sharded by FSDP.
+
+    Background: upstream ``TrainingWeightWrapperBaseTensor.fsdp_pre_all_gather``
+    in ``torchao/prototype/moe_training/tensor.py`` simply returns
+    ``self._data.to(mp_policy.param_dtype)`` without any padding. When the
+    outer (un-sharded) param size along dim 0 is not divisible by the FSDP
+    world size, FSDP pads the global tensor so every rank's local shard has
+    ``ceildiv(outer_size[0], world_size)`` rows. Tail ranks therefore end up
+    with shards that contain *only padding* (``self._data.shape[0] == 0``).
+    FSDP's foreach_all_gather asserts that ``fsdp_pre_all_gather`` returns
+    inputs with the padded sharded size and crashes (PyTorch
+    ``_fully_shard/_fsdp_param.py:811``) when a wrapper returns a length-0
+    tensor instead. This affects e.g. DeepSeek-V3's ``kv_a_proj_with_mqa``
+    (out=576) on FSDP world size 256 -> padded shard 3, tail rank shard 0.
+
+    We previously carried a similar patch on a torchao fork for the grouped-
+    experts path, but since the recipe was rebased onto upstream torchao and
+    ``MXFP8Linear`` now hits the same base-class hook, the right fix is to
+    patch the base. Idempotent / safe to call multiple times.
+    """
+    try:
+        from torchao.prototype.moe_training.tensor import (
+            TrainingWeightWrapperBaseTensor,
+        )
+    except ImportError:
+        return
+
+    if getattr(
+        TrainingWeightWrapperBaseTensor.fsdp_pre_all_gather,
+        "_llmb_uneven_shard_padded",
+        False,
+    ):
+        return
+
+    import torch
+    import torch.nn.functional as F
+
+    def fsdp_pre_all_gather_padded(self, mesh, outer_size, outer_stride, module, mp_policy):
+        data = self._data.to(mp_policy.param_dtype)
+        world_size = mesh.size()
+        # ceildiv(outer_size[0], world_size) is what FSDP expects on every rank.
+        padded_dim0 = -(-int(outer_size[0]) // world_size)
+        if data.shape[0] < padded_dim0:
+            pad = [0] * (2 * data.ndim)
+            pad[-1] = padded_dim0 - data.shape[0]  # pad dim 0 (bottom)
+            data = F.pad(data, tuple(pad))
+        elif data.shape[0] > padded_dim0:
+            # Should not happen for correctly-sharded FSDP params; defend anyway.
+            data = data[:padded_dim0]
+        return (data,), ()
+
+    fsdp_pre_all_gather_padded._llmb_uneven_shard_padded = True
+    TrainingWeightWrapperBaseTensor.fsdp_pre_all_gather = fsdp_pre_all_gather_padded
+    logger.info(
+        "Patched torchao TrainingWeightWrapperBaseTensor.fsdp_pre_all_gather "
+        "to handle uneven FSDP sharding (pads dim 0 to ceildiv(outer_size[0], world_size))."
+    )
+
+
+_patch_torchao_fsdp_pre_all_gather()
+
+
 class MXFP8Linear(Linear):
     """Linear that applies MXFP8 quantization in its constructor."""
 
