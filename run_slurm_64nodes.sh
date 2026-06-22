@@ -106,7 +106,7 @@ DATA_PARALLEL_SHARD_DEGREE=${DATA_PARALLEL_SHARD_DEGREE:--1}
 EXPERT_PARALLEL_DEGREE=${EXPERT_PARALLEL_DEGREE:-64}
 PIPELINE_PARALLEL_DEGREE=${PIPELINE_PARALLEL_DEGREE:-1}
 LOCAL_BATCH_SIZE=${LOCAL_BATCH_SIZE:-8}
-TRAINING_STEPS=${TRAINING_STEPS:-2}
+TRAINING_STEPS=${TRAINING_STEPS:-50}
 
 # Dataset path
 DATASET_PATH=${DATASET_PATH:-"/lustre/fsw/sw_aidot/elfieg/datasets"}
@@ -116,6 +116,34 @@ LOG_RANK=${LOG_RANK:-"0,1,2,3"}
 
 # MoE Backend ("hybridep" requires /dev/nvidia-caps and /run/nvidia-fabric mounts)
 MOE_BACKEND=${MOE_BACKEND:-"hybridep"}
+
+# MoE quant: torchao | te_mxfp8 | te_bf16 | none (same as run_2nodes.sh)
+MOE_QUANT=${MOE_QUANT:-"te_mxfp8"}
+# Linear mxfp8_cublas requires torchao with MXLinearConfig; set USE_LINEAR_MX=1 to enable
+USE_LINEAR_MX=${USE_LINEAR_MX:-0}
+
+# Build converter args (same logic as run_2nodes.sh)
+if [[ "$MOE_QUANT" == "torchao" ]]; then
+    if [[ "$USE_LINEAR_MX" == "1" ]]; then
+        CONVERTER_ARGS="--model.converters=quantize.linear.mx,quantize.grouped_mm.mx --quantize.linear.mx.recipe_name=mxfp8_cublas --quantize.grouped_mm.mx.fqns=experts"
+    else
+        CONVERTER_ARGS='--model.converters=quantize.grouped_mm.mx --quantize.grouped_mm.mx.fqns=experts'
+    fi
+elif [[ "$MOE_QUANT" == "te_mxfp8" ]]; then
+    if [[ "$USE_LINEAR_MX" == "1" ]]; then
+        CONVERTER_ARGS="--model.converters=quantize.linear.mx,quantize.grouped_mm.te --quantize.linear.mx.recipe_name=mxfp8_cublas --quantize.grouped_mm.te.fqns=experts --quantize.grouped_mm.te.mode=mxfp8"
+    else
+        CONVERTER_ARGS='--model.converters=quantize.grouped_mm.te --quantize.grouped_mm.te.fqns=experts --quantize.grouped_mm.te.mode=mxfp8'
+    fi
+elif [[ "$MOE_QUANT" == "te_bf16" ]]; then
+    CONVERTER_ARGS='--model.converters=quantize.grouped_mm.te --quantize.grouped_mm.te.fqns=experts --quantize.grouped_mm.te.mode=bf16'
+else
+    if [[ "$USE_LINEAR_MX" == "1" ]]; then
+        CONVERTER_ARGS='--model.converters=quantize.linear.mx --quantize.linear.mx.recipe_name=mxfp8_cublas'
+    else
+        CONVERTER_ARGS=''
+    fi
+fi
 
 # ==========================================
 # Print Configuration
@@ -130,6 +158,8 @@ echo "GPUs per node: $NGPU_PER_NODE"
 echo "Total GPUs: $WORLD_SIZE"
 echo "Config: $CONFIG_FILE"
 echo "MoE Backend: $MOE_BACKEND"
+echo "MoE Quant: $MOE_QUANT"
+echo "Use Linear MX (mxfp8_cublas): $USE_LINEAR_MX"
 echo "Data Parallel: $DATA_PARALLEL_SHARD_DEGREE"
 echo "Expert Parallel: $EXPERT_PARALLEL_DEGREE"
 echo "Pipeline Parallel: $PIPELINE_PARALLEL_DEGREE"
@@ -154,7 +184,6 @@ export LD_LIBRARY_PATH=${RDMA_CORE_HOME}/lib:\$LD_LIBRARY_PATH; \
 export TRITON_CACHE_DIR=/tmp/triton_cache_\$(whoami)_\$SLURM_PROCID; \
 mkdir -p \$TRITON_CACHE_DIR; \
 export HYBRIDEP_DEBUG=1; \
-export TE_MXFP8_NAN_DEBUG=1; \
 export PYTHONPATH=$TORCHTITAN_HOME:\$PYTHONPATH; \
 export LOCAL_RANK=\$SLURM_LOCALID; \
 python ${RUN_DIR}/dump_deps.py --image $IMAGE --deepep ${DEEP_EP_REPO} --output ${RUN_DIR}/dependency_info.json; \
@@ -172,9 +201,7 @@ python -m $TRAIN_FILE \
     --training.local_batch_size=$LOCAL_BATCH_SIZE \
     --activation_checkpoint.mode=full \
     --debug.moe_force_load_balance \
-    --model.converters="quantize.grouped_mm.te" \
-    --quantize.grouped_mm.te.fqns="experts" \
-    --quantize.grouped_mm.te.mode="mxfp8" \
+    ${CONVERTER_ARGS} \
     --compile.enable \
     --parallelism.hybridep.enable_non_blocking \
     --parallelism.hybridep.moe_expert_capacity_factor=0.03125 \

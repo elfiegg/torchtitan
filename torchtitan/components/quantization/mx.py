@@ -51,12 +51,21 @@ class MXLinearConverter(QuantizationConverter):
             model_compile_enabled and job_config.parallelism.tensor_parallel_degree > 1
         ), "TP not yet supported with torch.compile for mxfp8"
 
-        # Configure MXFP8
-        from torchao.prototype.mx_formats.config import (
-            MXFP8Dim0CastKernelChoice,
-            MXFP8Dim1CastKernelChoice,
-            MXLinearConfig as TorchAOMXLinearConfig,
-        )
+        # Configure MXFP8 (requires torchao with MXLinearConfig, e.g. upstream or compatible fork)
+        try:
+            from torchao.prototype.mx_formats.config import (
+                MXFP8Dim0CastKernelChoice,
+                MXFP8Dim1CastKernelChoice,
+                MXLinearConfig as TorchAOMXLinearConfig,
+            )
+        except ImportError as e:
+            if "MXLinearConfig" in str(e):
+                raise ImportError(
+                    "Your torchao install does not provide MXLinearConfig for linear MX (mxfp8_cublas) training. "
+                    "Either omit quantize.linear.mx from model.converters, or use a torchao build that includes "
+                    "MXLinearConfig in torchao.prototype.mx_formats.config (e.g. upstream pytorch/ao)."
+                ) from e
+            raise
 
         mx_job_config = job_config.quantize.linear.mx
         config = TorchAOMXLinearConfig.from_recipe_name(mx_job_config.recipe_name)
@@ -80,9 +89,17 @@ class MXLinearConverter(QuantizationConverter):
         if not self.enabled:
             return
 
-        from torchao.prototype.mx_formats.config import (
-            MXLinearConfig as TorchAOMXLinearConfig,
-        )
+        try:
+            from torchao.prototype.mx_formats.config import (
+                MXLinearConfig as TorchAOMXLinearConfig,
+            )
+        except ImportError as e:
+            if "MXLinearConfig" in str(e):
+                raise ImportError(
+                    "Your torchao install does not provide MXLinearConfig. "
+                    "Omit quantize.linear.mx from model.converters or use a compatible torchao."
+                ) from e
+            raise
         from torchao.quantization import quantize_
 
         assert isinstance(self.config, TorchAOMXLinearConfig)
@@ -148,8 +165,8 @@ class MXGroupedMMConverter(QuantizationConverter):
             return
 
         from torchao.prototype.moe_training.config import (
-            MXFP8GroupedMMConfig,
-            MXFP8GroupedMMRecipe,
+            MXFP8TrainingOpConfig,
+            MXFP8TrainingRecipe,
         )
         from torchao.quantization.quant_api import quantize_
 
@@ -159,15 +176,15 @@ class MXGroupedMMConverter(QuantizationConverter):
                     return True
             return False
 
-        # Map torchtitan recipe names to torchao MXFP8GroupedMMRecipe values
+        # Map torchtitan recipe names to torchao MXFP8TrainingRecipe values
         _RECIPE_MAP = {
-            "mxfp8": MXFP8GroupedMMRecipe.MXFP8_RCEIL,
-            "mxfp8_rceil": MXFP8GroupedMMRecipe.MXFP8_RCEIL,
-            "mxfp8_rceil_wgrad_with_hp": MXFP8GroupedMMRecipe.MXFP8_RCEIL_WGRAD_WITH_HP,
-            "mxfp8_emulated_rceil": MXFP8GroupedMMRecipe.MXFP8_EMULATED_RCEIL,
+            "mxfp8": MXFP8TrainingRecipe.MXFP8_RCEIL,
+            "mxfp8_rceil": MXFP8TrainingRecipe.MXFP8_RCEIL,
+            "mxfp8_rceil_wgrad_with_hp": MXFP8TrainingRecipe.MXFP8_RCEIL_WGRAD_WITH_HP,
+            "mxfp8_emulated_rceil": MXFP8TrainingRecipe.MXFP8_EMULATED_RCEIL,
         }
         recipe = _RECIPE_MAP[self.recipe_name]
-        config = MXFP8GroupedMMConfig.from_recipe(recipe)
+        config = MXFP8TrainingOpConfig.from_recipe(recipe)
         quantize_(model, config=config, filter_fn=moe_module_filter_fn)
         logger.info(
             f"Converted MoE layers matching FQNS {self.moe_fqns} "

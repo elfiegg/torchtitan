@@ -46,7 +46,6 @@ a Python List[int]. This sync is per-GEMM-call (3 per MoE layer per step).
 """
 
 import logging
-import os
 from typing import Any, List, Optional, Tuple
 
 import torch
@@ -183,28 +182,44 @@ def _mxfp8_quantize_inputs(
     return tex.split_quantize(padded_A, padded_splits, quantizers), padded_splits
 
 
-def _mxfp8_quantize_weights(B_t: torch.Tensor, num_experts: int, transpose: bool = True):
-    """Quantize weight matrices per expert using MXFP8.
+def _mxfp8_quantize_weights(B_t: torch.Tensor, num_experts: int):
+    """Quantize weight matrices per expert using MXFP8 for forward (TN layout).
 
-    Args:
-        B_t: [E, K, N] weight tensor (already transposed from GroupedExperts).
-        transpose: If True, transposes each [K, N] -> [N, K] for TN layout.
+    Transposes B_t from [E, K, N] -> [E, N, K] and quantizes rowwise,
+    matching TE's GroupedLinear forward convention.
     """
     fp8_dtype = tex.DType.kFloat8E4M3
     quantizers = []
     for _ in range(num_experts):
         q = MXFP8Quantizer(fp8_dtype, rowwise=True, columnwise=False)
         q.internal = True
+        q.optimize_for_gemm = True
         quantizers.append(q)
-    if transpose:
-        # Single contiguous copy for the full [E,K,N]->[E,N,K] transpose
-        # instead of 16 individual .t().contiguous() calls (saves 15 DtoD
-        # copy kernels per invocation).
-        B_t_T = B_t.transpose(-2, -1).contiguous()  # [E, N, K]
-        return [q.quantize_impl(B_t_T[i]) for i, q in enumerate(quantizers)]
-    else:
-        # B_t is [E, K, N]; B_t[i] is already contiguous when B_t is.
-        return [q.quantize_impl(B_t[i].contiguous()) for i, q in enumerate(quantizers)]
+    B_t_T = B_t.transpose(-2, -1).contiguous()  # [E, N, K]
+    return [q.quantize_impl(B_t_T[i]) for i, q in enumerate(quantizers)]
+
+
+def _mxfp8_quantize_weights_dgrad(B_t: torch.Tensor, num_experts: int):
+    """Quantize weight matrices per expert for DGRAD (NN layout, columnwise).
+
+    Transposes B_t from [E, K, N] -> [E, N, K], quantizes with both
+    rowwise+columnwise, then switches to columnwise-only usage.
+    This matches TE's GroupedLinear dgrad convention where the same
+    weight tensor is reused from forward but with columnwise view.
+    """
+    fp8_dtype = tex.DType.kFloat8E4M3
+    quantizers = []
+    for _ in range(num_experts):
+        q = MXFP8Quantizer(fp8_dtype, rowwise=True, columnwise=True)
+        q.internal = True
+        q.optimize_for_gemm = True
+        quantizers.append(q)
+    B_t_T = B_t.transpose(-2, -1).contiguous()  # [E, N, K]
+    result = [q.quantize_impl(B_t_T[i]) for i, q in enumerate(quantizers)]
+    for r in result:
+        if hasattr(r, "update_usage"):
+            r.update_usage(rowwise_usage=False, columnwise_usage=True)
+    return result
 
 
 def _mxfp8_quantize_wgrad(
@@ -289,44 +304,24 @@ def _te_gemm_fwd(
     A_used = A[:total_tokens] if A.shape[0] > total_tokens else A
 
     if use_fp8:
-        _nan_debug = os.environ.get("TE_MXFP8_NAN_DEBUG", "0") == "1"
-        if _nan_debug:
-            _has_nan_A = A_used.isnan().any().item()
-            _has_nan_B = B_t.isnan().any().item()
-            logger.info(
-                f"[NaN-debug FWD] A_used={list(A_used.shape)} nan={_has_nan_A} "
-                f"B_t={list(B_t.shape)} nan={_has_nan_B} "
-                f"m_splits={m_splits} total_tokens={total_tokens}"
-            )
         inputmats_fp8, padded_splits = _mxfp8_quantize_inputs(
             A_used, m_splits, num_experts
         )
-        weights_fp8 = _mxfp8_quantize_weights(B_t, num_experts, transpose=True)
-        if _nan_debug:
-            logger.info(
-                f"[NaN-debug FWD] quantization done: "
-                f"num_inputs={len(inputmats_fp8)} num_weights={len(weights_fp8)} "
-                f"padded_splits={padded_splits}"
-            )
-        padded_total = sum(padded_splits)
-        padded_out = torch.empty(padded_total, N, dtype=out_dtype, device=A.device)
+        weights_fp8 = _mxfp8_quantize_weights(B_t, num_experts)
+        needs_unpad = padded_splits != m_splits
+        if needs_unpad:
+            padded_total = sum(padded_splits)
+            padded_out = torch.empty(padded_total, N, dtype=out_dtype, device=A.device)
+            gemm_out = padded_out
+        else:
+            gemm_out = out[:total_tokens]
         general_grouped_gemm(
-            weights_fp8, inputmats_fp8, [padded_out],
+            weights_fp8, inputmats_fp8, [gemm_out],
             [None] * num_experts, out_dtype,
             single_output=True, m_splits=padded_splits,
         )
-        if _nan_debug:
-            _has_nan_gemm = padded_out.isnan().any().item()
-            logger.info(
-                f"[NaN-debug FWD] padded_out={list(padded_out.shape)} nan={_has_nan_gemm} "
-                f"padded_splits={padded_splits}"
-            )
-        _unpad_mxfp8_output(padded_out, m_splits, padded_splits, out)
-        if _nan_debug:
-            _has_nan_out = out[:total_tokens].isnan().any().item()
-            logger.info(
-                f"[NaN-debug FWD] final out={list(out.shape)} nan={_has_nan_out}"
-            )
+        if needs_unpad:
+            _unpad_mxfp8_output(padded_out, m_splits, padded_splits, out)
     else:
         # Single transpose+contiguous for all experts instead of 16 individual
         B_t_T = B_t.transpose(-2, -1).contiguous()  # [E, N, K]
@@ -354,7 +349,11 @@ def _te_gemm_dgrad(
     out_dtype: torch.dtype,
     use_fp8: bool,
 ) -> torch.Tensor:
-    """DGRAD: grad_A[i] = grad_out[i] @ B_t[i]  (TN layout)."""
+    """DGRAD: grad_A[i] = grad_out[i] @ weight[i]  (NN layout, columnwise weights).
+
+    Matches TE GroupedLinear: weights [N, K] with columnwise usage,
+    grad_output [M, N] with rowwise usage, layout="NN".
+    """
     m_splits = _offs_to_m_splits(offs)
     num_experts = len(m_splits)
     total_tokens = sum(m_splits)
@@ -369,18 +368,24 @@ def _te_gemm_dgrad(
         grad_fp8, padded_splits = _mxfp8_quantize_inputs(
             grad_used, m_splits, num_experts
         )
-        bt_fp8 = _mxfp8_quantize_weights(B_t, num_experts, transpose=False)
-        padded_total = sum(padded_splits)
-        padded_grad_A = torch.empty(
-            padded_total, K, dtype=out_dtype, device=grad_output.device
-        )
+        weights_col_fp8 = _mxfp8_quantize_weights_dgrad(B_t, num_experts)
+        needs_unpad = padded_splits != m_splits
+        if needs_unpad:
+            padded_total = sum(padded_splits)
+            padded_grad_A = torch.empty(
+                padded_total, K, dtype=out_dtype, device=grad_output.device
+            )
+            gemm_out = padded_grad_A
+        else:
+            gemm_out = grad_A[:total_tokens]
         general_grouped_gemm(
-            bt_fp8, grad_fp8, [padded_grad_A],
+            weights_col_fp8, grad_fp8, [gemm_out],
             [None] * num_experts, out_dtype,
-            single_output=True, m_splits=padded_splits,
-            grad=True,
+            single_output=True, layout="NN", m_splits=padded_splits,
+            grad=True, use_split_accumulator=True,
         )
-        _unpad_mxfp8_output(padded_grad_A, m_splits, padded_splits, grad_A)
+        if needs_unpad:
+            _unpad_mxfp8_output(padded_grad_A, m_splits, padded_splits, grad_A)
     else:
         bt_weights = [B_t[i].contiguous() for i in range(num_experts)]
         grad_splits = list(grad_used.contiguous().split(m_splits))
@@ -432,7 +437,7 @@ def _te_gemm_wgrad(
             inputs_fp8, grads_fp8, wgrad_list,
             [None] * num_experts, out_dtype,
             layout="NT", m_splits=padded_splits,
-            grad=True,
+            grad=True, use_split_accumulator=True,
         )
     else:
         input_splits = list(A_used.contiguous().split(m_splits))
@@ -469,10 +474,10 @@ class _TEGroupedGEMM(torch.autograd.Function):
     ``torch.compile`` / dynamo can trace through the full forward and
     backward without graph breaks.
 
-    GEMM layout conventions (row-major → cuBLAS column-major mapping):
+    GEMM layout conventions (matching TE GroupedLinear):
         Forward (TN):  out[i] = input[i] @ weight[i]^T    [m_i, K] @ [K, N] = [m_i, N]
-        DGRAD   (TN):  grad_A[i] = grad_out[i] @ B[i]     [m_i, N] @ [N, K] = [m_i, K]
-        WGRAD   (NT):  wgrad[i] = grad_out[i]^T @ A[i]    [N, m_i] @ [m_i, K] = [N, K]
+        DGRAD   (NN):  grad_A[i] = grad_out[i] @ weight[i] [m_i, N] @ [N, K] = [m_i, K]
+        WGRAD   (NT):  wgrad[i] = input[i]^T @ grad_out[i] [K, m_i] @ [m_i, N] = [K, N]
     """
 
     @staticmethod

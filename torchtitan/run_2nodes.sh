@@ -39,14 +39,14 @@ else
 fi
 
 # Master address (first node in SLURM_NODELIST, or current hostname for node 0)
-MASTER_ADDR=ptyche0068.ptyche.clusters.nvidia.com
+MASTER_ADDR=ptyche0264.ptyche.clusters.nvidia.com
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
 NGPU=${NGPU:-4}                    # GPUs per node
-MASTER_PORT=${MASTER_PORT:-61626}  # Master port
+MASTER_PORT=${MASTER_PORT:-61747}  # Master port
 export LOG_RANK=${LOG_RANK:-"0"}   # Which ranks to log from
 
 # Training configuration
@@ -87,6 +87,7 @@ echo "NGPU: $NGPU (per node)"
 echo "Total GPUs: $((NNODES * NGPU))"
 echo "MoE Backend: $MOE_BACKEND"
 echo "MoE Quant: $MOE_QUANT"
+echo "Use Linear MX (mxfp8_cublas): $USE_LINEAR_MX"
 echo "Config: $CONFIG_FILE"
 echo "Triton Cache: $TRITON_CACHE_DIR"
 echo "Profile Dir: $PROFILE_DIR"
@@ -119,18 +120,33 @@ echo "Working directory: $(pwd)"
 # subclass wraps the weights to intercept torch._grouped_mm.
 MOE_QUANT=${MOE_QUANT:-"te_mxfp8"}
 
+# Linear mxfp8_cublas (quantize.linear.mx) requires torchao with MXLinearConfig in mx_formats.config.
+# Set USE_LINEAR_MX=1 to enable when your torchao provides it; otherwise leave unset for MoE-only quant.
+USE_LINEAR_MX=${USE_LINEAR_MX:-0}
+
 # Build converter args based on MOE_QUANT selection
 if [[ "$MOE_QUANT" == "torchao" ]]; then
     # Note: grouped_mm.mx only supports recipe_name="mxfp8" (default), not "mxfp8_cublas"
-    CONVERTER_ARGS='--model.converters=quantize.grouped_mm.mx --quantize.grouped_mm.mx.fqns=experts'
+    if [[ "$USE_LINEAR_MX" == "1" ]]; then
+        CONVERTER_ARGS="--model.converters=quantize.linear.mx,quantize.grouped_mm.mx --quantize.linear.mx.recipe_name=mxfp8_cublas --quantize.grouped_mm.mx.fqns=experts"
+    else
+        CONVERTER_ARGS='--model.converters=quantize.grouped_mm.mx --quantize.grouped_mm.mx.fqns=experts'
+    fi
 elif [[ "$MOE_QUANT" == "te_mxfp8" ]]; then
-    # TE converter path: wraps weights in TEGroupedMMTensor (MXFP8 mode)
-    CONVERTER_ARGS='--model.converters=quantize.grouped_mm.te --quantize.grouped_mm.te.fqns=experts --quantize.grouped_mm.te.mode=mxfp8'
+    if [[ "$USE_LINEAR_MX" == "1" ]]; then
+        CONVERTER_ARGS="--model.converters=quantize.linear.mx,quantize.grouped_mm.te --quantize.linear.mx.recipe_name=mxfp8_cublas --quantize.grouped_mm.te.fqns=experts --quantize.grouped_mm.te.mode=mxfp8"
+    else
+        CONVERTER_ARGS='--model.converters=quantize.grouped_mm.te --quantize.grouped_mm.te.fqns=experts --quantize.grouped_mm.te.mode=mxfp8'
+    fi
 elif [[ "$MOE_QUANT" == "te_bf16" ]]; then
-    # TE converter path: wraps weights in TEGroupedMMTensor (BF16 mode)
     CONVERTER_ARGS='--model.converters=quantize.grouped_mm.te --quantize.grouped_mm.te.fqns=experts --quantize.grouped_mm.te.mode=bf16'
 else
-    CONVERTER_ARGS=''
+    # none
+    if [[ "$USE_LINEAR_MX" == "1" ]]; then
+        CONVERTER_ARGS='--model.converters=quantize.linear.mx --quantize.linear.mx.recipe_name=mxfp8_cublas'
+    else
+        CONVERTER_ARGS=''
+    fi
 fi
 
 PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
