@@ -6,6 +6,7 @@
 
 import contextlib
 import gc
+import os
 import subprocess
 import time
 from collections.abc import Generator
@@ -14,9 +15,14 @@ from types import ModuleType
 
 import torch
 from torch._utils import _get_available_device_type, _get_device_module
+from torch.nn.attention import (
+    activate_flash_attention_impl,
+    current_flash_attention_impl,
+    restore_flash_attention_impl,
+)
 
 from torchtitan.observability import structured_logger as sl
-from torchtitan.tools.logging import logger
+from torchtitan.tools.logging import logger, warn_once
 
 
 def round_up(value: int, multiple: int) -> int:
@@ -32,14 +38,77 @@ def has_cuda_capability(major: int, minor: int) -> bool:
     )
 
 
+FLASH_ATTENTION_IMPL_ENV = "TORCHTITAN_FLASH_ATTENTION_IMPL"
+_FLASH_ATTENTION_IMPL_CHOICES = ("auto", "FA2", "FA3", "FA4")
+
+
 def get_cuda_flash_attention_impl() -> str | None:
-    """Return the FlashAttention implementation for the current CUDA architecture."""
+    """Return the FlashAttention implementation to use on the current GPU.
+
+    ``None`` means the FlashAttention kernels built into PyTorch (FA2), which
+    need no out-of-tree wheel. FA3 and FA4 are optional wheels
+    (``flash_attn_interface`` and ``flash_attn.cute`` respectively) that
+    ``activate_flash_attention_impl`` registers over aten process-wide.
+
+    ``TORCHTITAN_FLASH_ATTENTION_IMPL`` overrides the choice: ``auto``
+    (default) selects by compute capability, ``FA2`` keeps PyTorch's built-in
+    kernels, and ``FA3``/``FA4`` request that wheel. The override is an
+    environment variable rather than a config field because activation is
+    process-global: per-module config values would silently race, with the
+    last-built attention module deciding for the whole process.
+    """
+    override = os.environ.get(FLASH_ATTENTION_IMPL_ENV, "auto")
+    if override not in _FLASH_ATTENTION_IMPL_CHOICES:
+        raise ValueError(
+            f"{FLASH_ATTENTION_IMPL_ENV}={override!r} is not one of "
+            f"{_FLASH_ATTENTION_IMPL_CHOICES}."
+        )
+    if override != "auto":
+        return None if override == "FA2" else override
+
     # Blackwell (SM 10.0) and newer use FA4; Hopper (SM 9.0) uses FA3.
     if has_cuda_capability(10, 0):
         return "FA4"
     if has_cuda_capability(9, 0):
         return "FA3"
     return None
+
+
+def maybe_activate_cuda_flash_attention_impl() -> str | None:
+    """Activate the FlashAttention implementation selected for this GPU.
+
+    See :func:`get_cuda_flash_attention_impl` for the selection rules and the
+    ``TORCHTITAN_FLASH_ATTENTION_IMPL`` override. FA3 and FA4 are optional
+    wheels that torchtitan does not declare in requirements.txt, so a selection
+    does not imply the kernels are importable. When they are missing, fall back
+    to the FlashAttention kernels built into PyTorch (FA2) instead of failing at
+    model construction.
+
+    Returns the activated implementation, or None when FA2 is used.
+    """
+    flash_attention_impl = get_cuda_flash_attention_impl()
+    if flash_attention_impl is None:
+        # An impl activated earlier in this process (by another attention
+        # module, or by a library torchtitan is embedded in) stays registered
+        # over aten until restored, so FA2 has to be restored explicitly.
+        if current_flash_attention_impl() is not None:
+            restore_flash_attention_impl()
+        warn_once(logger, "Using the FlashAttention kernels built into PyTorch (FA2).")
+        return None
+
+    if current_flash_attention_impl() == flash_attention_impl:
+        return flash_attention_impl
+
+    try:
+        activate_flash_attention_impl(flash_attention_impl)
+    except (ImportError, RuntimeError) as e:
+        warn_once(
+            logger,
+            f"{flash_attention_impl} is selected for this CUDA architecture but "
+            f"could not be activated ({e}); using FA2.",
+        )
+        return None
+    return flash_attention_impl
 
 
 def has_rocm_capability(major: int, minor: int) -> bool:

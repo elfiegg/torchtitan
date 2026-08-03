@@ -10,16 +10,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from torch.nn.attention import (
-    activate_flash_attention_impl,
-    current_flash_attention_impl,
-)
+from torch.nn.attention import current_flash_attention_impl
 from torch.nn.attention.varlen import AuxRequest
 from torchtitan.distributed.utils import is_in_batch_invariant_mode
 from torchtitan.models.common.attention import AttentionMasksType
 from torchtitan.protocols.module import Module
-from torchtitan.tools.logging import warn_once
-from torchtitan.tools.utils import get_cuda_flash_attention_impl
+from torchtitan.tools.utils import maybe_activate_cuda_flash_attention_impl
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.attention.attention import get_attention_context
@@ -89,17 +85,10 @@ class PyTorchVarlenAttentionImpl(FlashAttentionImpl):
 
         self.enable_gqa = self.num_heads > self.num_kv_heads
 
-        flash_attention_impl = get_cuda_flash_attention_impl()
-        if flash_attention_impl is not None:
-            # activate_flash_attention_impl() will restore internal global state
-            # and re-run register function, so we want to only call it once.
-            if current_flash_attention_impl() != flash_attention_impl:
-                activate_flash_attention_impl(flash_attention_impl)
-        else:
-            warn_once(
-                logger,
-                "FA3/FA4 not available on this CUDA architecture, falling back to FA2. ",
-            )
+        # maybe_activate_cuda_flash_attention_impl() is a no-op when the impl is
+        # already active: activate_flash_attention_impl() restores internal global
+        # state and re-runs the register function, so it must only be called once.
+        maybe_activate_cuda_flash_attention_impl()
 
     # Based on vLLM's FlashAttentionImpl.forward():
     # https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flash_attn.py
