@@ -1,0 +1,21 @@
+{
+  "source_job": 3728115,
+  "source_packet_manifest": "9d02d54e44799249d39a8e7b5df1a82b3d9ff95fe6be19550390d77723c3be0a",
+  "torchtitan_base": "6b123cbe0cc75dc7a6c2b0d541736882e64b798e",
+  "original_files": {
+    "packing.py": "87f964fa4e890cff8e6296a71cfa4a5f9036749484d9e068dfa1e7cd0bf8d8e1",
+    "w13_prototype/build_variant.py": "03f66a6beefdd476162d4b57674986fbe0a088b65eb31d17fa662fe6a1a753f9",
+    "w13_prototype/overlap.py": "8a1485380992d6cbf7672c05371d8a5400db745d1ff71e3314ea4329aded58aa",
+    "w13_prototype/install.py": "a5daa333fbeb7d12d47ef3847ce471ae63bae42cb72c757fbe2ae08936c96700",
+    "w13_adapter/w13_screen/install_screen.py": "29d1c557efb3a225a811f215c5fe062bd7f70dbfd0c4798f23b892b29143ed84",
+    "candidate_dp32/full64_topology_dp32/work_identity.py": "f853c74a9eb85d3c13a2c9f5ca90b555e9f8c70763cf2429398a1ae8616cc07d"
+  },
+  "adaptation": [
+    "Package-relative imports and explicit backend source paths",
+    "Recipe-specific trainer/engine and data-loader subclasses replace campaign interception",
+    "Unused installation teardown allowed when no backward or capture occurred",
+    "Formatting and copyright headers"
+  ],
+  "new_integration_gpu_validated": false,
+  "full_model_numerical_qualified": false
+}

@@ -530,6 +530,56 @@ def muse_spark_816b_a42b_dist_moe_bf16_spmd_64() -> Trainer.Config:
     return _muse_spark_816b_dist_moe_bf16_spmd_64(fake_backend=False)
 
 
+def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_experimental() -> Trainer.Config:
+    """Run the experimental DP32/CP2 packing and W13-overlap bundle.
+
+    Requires the campaign's pinned runtime. Numerical equivalence and long-run
+    quality remain unqualified; see experiments/muse_spark_64/README.md.
+    """
+    from dataclasses import fields
+
+    from torchtitan.experiments.muse_spark_64.data import OriginalWorkDataLoader
+    from torchtitan.experiments.muse_spark_64.trainer import ExperimentalTrainer
+
+    config = muse_spark_816b_a42b_dist_moe_bf16_spmd_64()
+    config.debug.seed = 42
+    config.hf_assets_path = os.environ.get(
+        "MUSE_SPARK_HF_ASSETS_PATH", config.hf_assets_path
+    )
+    packing_config = config.dataloader.dataset
+    dataset = packing_config.dataset
+    source = replace(
+        dataset.source, revision="1588ec454efa1a09f29cd18ddd04fe05fc8653a2"
+    )
+    config.dataloader = OriginalWorkDataLoader.Config(
+        **{
+            field.name: getattr(config.dataloader, field.name)
+            for field in fields(config.dataloader)
+        }
+    )
+    config.dataloader.dataset = replace(
+        packing_config, dataset=replace(dataset, source=source)
+    )
+    config.parallelism = replace(
+        config.parallelism,
+        data_parallel_shard_degree=32,
+        context_parallel_degree=2,
+    )
+    config.dist_moe_runtime = replace(
+        config.dist_moe_runtime,
+        scratch_capacity_factor=10.0,
+        activation_slot_capacity_factor=0.0,
+    )
+    config.checkpointer = replace(
+        config.checkpointer,
+        load_only=True,
+        folder="muse_spark_816b_a42b_dist_moe_bf16_spmd_64_experimental",
+    )
+    return ExperimentalTrainer.Config(
+        **{field.name: getattr(config, field.name) for field in fields(config)}
+    )
+
+
 def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_fake() -> Trainer.Config:
     """Validate the logical-64 BF16 SPMD recipe with FakePG."""
     return _muse_spark_816b_dist_moe_bf16_spmd_64(fake_backend=True)

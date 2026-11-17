@@ -1,0 +1,10 @@
+{
+  "schema": "muse-spark-64-experimental-w13-source-v1",
+  "files": {
+    "__init__.py": "31dddc0870fb027a3d915d793ea19b89c8143be44c761e1a572d722a20edff11",
+    "build_variant.py": "72b8d2a0864c57320859f045572e351b3e20acd4966bdb248413aa1351bc9421",
+    "overlap.py": "d84b576fb3bdec8166064919497ae7d000a6e700df9d4368cc2c80f80a1d8a8b",
+    "install.py": "470814ce3c46a2d08f145e20cb27a8c71bd41dede81ed73adbb9d74fba222395",
+    "RUNTIME_PINS.json": "7663cc3541f474df3c2a9cc1810f088ffca30b5c570a89eaf71310e0ff672cab"
+  }
+}
