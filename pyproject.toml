@@ -41,6 +41,10 @@ where = [""]
 # tightening the first pattern to "torchtitan.*" cannot silently drop it.
 include = ["torchtitan*", "torchtitan_recipes*"]
 
+[tool.setuptools.package-data]
+"torchtitan.experiments.muse_spark_64" = ["PROVENANCE.json", "README.md"]
+"torchtitan.experiments.muse_spark_64.w13" = ["*.json"]
+
 [tool.pytest.ini_options]
 addopts = ["--showlocals"]  # show local variables in tracebacks
 testpaths = ["tests"]

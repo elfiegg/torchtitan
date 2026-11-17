@@ -204,6 +204,8 @@ class DistMoeRuntime(Configurable):
                 as soon as each stage's backward releases its state.
                 ``"microbatch"`` retains one slot across all local stages for a
                 microbatch.
+            num_sms: Optional CuTe worker count forwarded to the annex. None
+                retains device discovery and production shape-aware tuning.
             inference: Specialize the context for a vLLM generator: scratch-only
                 planning with no saved activations, and a per-step row count
                 instead of the planned maximum. The activation-slot controls
@@ -216,8 +218,14 @@ class DistMoeRuntime(Configurable):
         vmm_capacity_factor: float | None = None
         pp_activation_slot_policy: PPActivationSlotPolicy = "stage_microbatch"
         inference: bool = False
+        num_sms: int | None = None
 
         def __post_init__(self) -> None:
+            if self.num_sms is not None:
+                if isinstance(self.num_sms, bool) or not isinstance(self.num_sms, int):
+                    raise TypeError("num_sms must be an integer")
+                if self.num_sms <= 0 or self.num_sms % 2:
+                    raise ValueError("num_sms must be positive and even")
             if (
                 self.activation_slot_bytes is not None
                 and self.activation_slot_capacity_factor is not None
@@ -459,6 +467,7 @@ class DistMoeRuntime(Configurable):
                 self.config.activation_slot_capacity_factor
             ),
             num_activation_slots=max_live_activation_slots,
+            num_sms=self.config.num_sms,
             vmm=vmm,
             bf16_grouped_gemm_preset=self._bf16_grouped_gemm_preset(module),
             block_scaled=module.block_scaled_config,

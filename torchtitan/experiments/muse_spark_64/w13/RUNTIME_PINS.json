@@ -1,0 +1,15 @@
+{
+  "dist_moe.api": "e8def4834e7cc57c2ff54f052dcc58b14e04dc8ae5b9b74281860a1f04ec3497",
+  "dist_moe._buffers": "856b91ff502a1e60e4a623d13801eeec9ba86f4e6943ca483174955a0174f684",
+  "dist_moe._execution": "fd58aaabc814892a8acbd68fb0a412d6ffa6c712f841c8a8ed0f18393340d757",
+  "dist_moe._triton_ops": "103d240d6d680d8cd56296e0653ccfcf32ea384489a811b1d6ce067de9dd53d6",
+  "dist_moe._activation_buffer": "668d16dba111d4490d15bff37350a1a2c95ba4552e9708f6b46aa9c30f176e67",
+  "dist_moe._activation_buffer_planner_kernel": "2979e5feb81e8c00ed9049e4b83e47c18e1ae49d13b5fd0ab21115c02f476ad8",
+  "dist_moe.kernels.triton.barrier": "524c42679ffbc70fe82278388fe531d569cd68c60259fff57043dde000e66c3d",
+  "dist_moe.kernels.dist_grouped_gemm": "f83bf1b0147e2d840d15d0342c1050d8e9033229916a9181b094955941031414",
+  "dist_moe.kernels.grouped_gemm": "6a8b7427ab91c7b51e5c71f3a8caf3a381e71b47cdebbe3be8339f56a8b15b67",
+  "torchtitan.models.common.dist_moe.routed_experts": "9f4924a62ee3e06399e5b874ff0bda6f8d45d985eef0a3812ae353a1489d4ea8",
+  "torchtitan.models.muse_spark.model": "fd643657e823e66d52fc6d163c93a9588b1d88bf406fa7aadb0f20d1caa91798",
+  "torchtitan.distributed.local_compile": "a5d2a9286fe53f49fe31e8db3a746f410447e1db7cf332a138e7f74959971cfd",
+  "torchtitan.models.common.dist_moe.runtime": "1810f2ec2b1ccd204eedd7d6eace1f17a3ac1f3b7150c652af532ff22e953234"
+}
