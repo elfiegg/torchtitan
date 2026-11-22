@@ -17,6 +17,7 @@ from torchtitan.models.common.attention import (
     Attention,
     create_varlen_metadata_for_document,
     InnerAttention,
+    PaddingSegmentsConfig,
     VarlenAttentionMetadata,
 )
 
@@ -77,6 +78,7 @@ class DSV4InnerAttention(InnerAttention):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> DeepSeekV4CompressedSparseAttentionMetadata:
             """Default for the sliding-window variant: no compressed groups."""
             varlen = create_varlen_metadata_for_document(
@@ -84,6 +86,7 @@ class DSV4InnerAttention(InnerAttention):
                 padding_mask=padding_mask,
                 max_num_documents=max_num_documents,
                 max_context_length=max_context_length,
+                padding_segments=padding_segments,
             )
             empty = torch.empty(0, dtype=torch.int32, device=positions.device)
             return DeepSeekV4CompressedSparseAttentionMetadata(

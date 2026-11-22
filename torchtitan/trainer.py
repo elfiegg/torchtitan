@@ -245,6 +245,9 @@ class Trainer(Configurable):
             max_context_length=config.model.max_context_length,
             num_tokens_per_microbatch=num_tokens_per_microbatch,
             vision_processor=self.vision_processor,
+            # Decoder models split the row-tail padding as their varlen
+            # attention metadata expects.
+            padding_segments=getattr(config.model, "padding_segments", None),
         )
 
         try:

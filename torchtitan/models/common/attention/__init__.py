@@ -22,6 +22,7 @@ from .attention import (  # noqa: F401
     GQAttention,
     InnerAttention,
     local_head_split,
+    PaddingSegmentsConfig,
     QKVLinear,
     SlidingWindowFlexInnerAttention,
     SlidingWindowVarlenInnerAttention,

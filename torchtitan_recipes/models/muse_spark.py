@@ -56,6 +56,7 @@ from torchtitan.distributed.activation_remat import (
 from torchtitan.models.common.activation import ClampedSwiGLU
 from torchtitan.models.common.attention import (
     FlexInnerAttention,
+    PaddingSegmentsConfig,
     SlidingWindowFlexInnerAttention,
     SlidingWindowVarlenInnerAttention,
     VarlenInnerAttention,
@@ -395,6 +396,7 @@ def _muse_spark_816b_dist_moe_spmd(
     remat_save_regions: Sequence[str] = _MUSE_SPARK_DIST_MOE_SAVE_REGIONS,
     attn_backend: Literal["flex", "varlen"] = "flex",
     max_num_documents: int | None = None,
+    padding_segments: PaddingSegmentsConfig | None = None,
     expert_precision: Literal["bf16", "mxfp8"] = "bf16",
 ) -> Trainer.Config:
     """Build a long-context Dist-MoE SPMD recipe.
@@ -420,6 +422,9 @@ def _muse_spark_816b_dist_moe_spmd(
             FA4 varlen attention.
         max_num_documents: Upper bound on documents per local microbatch.
             Varlen attention needs it for CUDA graphs.
+        padding_segments: Split each row's tail padding into short varlen
+            segments (``Decoder.Config.padding_segments``). Requires
+            ``max_num_documents``. None keeps one padding segment per row.
         expert_precision: ``"mxfp8"`` runs the routed experts, attention
             projections, and compressed-MoE projections in MXFP8. Inner
             attention and the LM head stay BF16.
@@ -459,6 +464,7 @@ def _muse_spark_816b_dist_moe_spmd(
     # Set before _with_dist_moe enables CUDA graphs, which Trainer.Config
     # validation checks against varlen attention.
     base.dataloader = replace(base.dataloader, max_num_documents=max_num_documents)
+    cast(MuseSparkModel.Config, base.model).padding_segments = padding_segments
     config = _with_dist_moe(
         base,
         expert_precision=expert_precision,
@@ -551,6 +557,7 @@ def _muse_spark_816b_dist_moe_spmd_64(
     fake_backend: bool,
     expert_precision: Literal["bf16", "mxfp8"],
     context_parallel_degree: int,
+    padding_segments: PaddingSegmentsConfig | None = None,
 ) -> Trainer.Config:
     """Configure 32K Dist-MoE SPMD on 64 GPUs: FSDP over 64 / CP ranks, CP, EP64.
 
@@ -574,6 +581,7 @@ def _muse_spark_816b_dist_moe_spmd_64(
         # One slot per 512 tokens, as in c4_document_capacity(). A row that
         # reaches the cap ends early and is padded.
         max_num_documents=64,
+        padding_segments=padding_segments,
         # Saving all attention regions fits on 64 GPUs and is about 2% faster
         # than the default save regions. With the vocab sharded over CP, the
         # compressed-MoE projections and the router gate outputs also fit.
@@ -639,7 +647,10 @@ def muse_spark_816b_a42b_dist_moe_mxfp8_spmd_64_fake() -> Trainer.Config:
 
 
 def _muse_spark_816b_dist_moe_spmd_64_benchmark(
-    *, fake_backend: bool, expert_precision: Literal["bf16", "mxfp8"]
+    *,
+    fake_backend: bool,
+    expert_precision: Literal["bf16", "mxfp8"],
+    padding_segments: PaddingSegmentsConfig | None = None,
 ) -> Trainer.Config:
     """Configure the fastest 64-GPU settings we measured. Benchmark only.
 
@@ -673,6 +684,7 @@ def _muse_spark_816b_dist_moe_spmd_64_benchmark(
         fake_backend=fake_backend,
         expert_precision=expert_precision,
         context_parallel_degree=2,
+        padding_segments=padding_segments,
     )
     # The fake recipe already forces routing.
     if not fake_backend:

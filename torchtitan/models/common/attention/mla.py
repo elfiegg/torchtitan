@@ -16,7 +16,7 @@ import torch_remat as remat
 from torchtitan.distributed.local_compile import local_compile
 from torchtitan.models.common.linear import Linear
 
-from .attention import InnerAttention
+from .attention import InnerAttention, PaddingSegmentsConfig
 
 if TYPE_CHECKING:
     from . import AttentionMetadata
@@ -73,12 +73,14 @@ class MLAAttention(InnerAttention):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> "AttentionMetadata | None":
             return self.inner_attention.build_attention_metadata(
                 positions,
                 padding_mask=padding_mask,
                 max_num_documents=max_num_documents,
                 max_context_length=max_context_length,
+                padding_segments=padding_segments,
             )
 
     def __init__(self, config: Config) -> None:

@@ -15,6 +15,7 @@ import torch
 
 from torchtitan.components.data.multimodal.vision_processor import VisionProcessor
 from torchtitan.components.tokenizer import BaseTokenizer
+from torchtitan.models.common.attention import PaddingSegmentsConfig
 
 
 class TrainingMicrobatch(ABC):
@@ -96,6 +97,10 @@ class DatasetBuildContext:
     max_num_documents: int | None = None
     num_mtp_layers: int = 0
     per_sample_pad_multiple: int = 1
+    padding_segments: PaddingSegmentsConfig | None = None
+    """How the document-aware packer splits row-tail padding, from the
+    model's ``Decoder.Config.padding_segments``. None: one segment per
+    ``max_context_length`` tokens."""
     vision_processor: VisionProcessor | None = None
     """The model's image and video preprocessing. None: no image or video
     inputs."""
