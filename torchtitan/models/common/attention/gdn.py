@@ -37,7 +37,11 @@ from torchtitan.models.common.attn_gym import (
 from torchtitan.models.common.linear import Linear, maybe_gather_tp_input
 from torchtitan.models.common.nn_modules import Conv1d
 from torchtitan.models.common.norm import GatedRMSNorm
-from .attention import create_varlen_metadata_for_document, InnerAttention
+from .attention import (
+    create_varlen_metadata_for_document,
+    InnerAttention,
+    PaddingSegmentsConfig,
+)
 from .linear_attention import (
     chunk_kernel_options,
     LinearAttention,
@@ -373,6 +377,7 @@ class InnerGDN(InnerAttention):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> LinearAttentionMetadata:
             """Build packed-sequence metadata consumed by Gated DeltaNet."""
             return LinearAttentionMetadata(
@@ -381,6 +386,7 @@ class InnerGDN(InnerAttention):
                     padding_mask=padding_mask,
                     max_num_documents=max_num_documents,
                     max_context_length=max_context_length,
+                    padding_segments=padding_segments,
                 ),
                 num_conv_history_tokens=self.conv_kernel_size - 1,
             )

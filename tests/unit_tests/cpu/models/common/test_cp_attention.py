@@ -335,7 +335,9 @@ class TestCpMlaMetadata(unittest.TestCase):
     def _get_attention_metadata(config):
         attention = Attention.Config(n_heads=4, inner_attention=config)
         decoder = SimpleNamespace(
-            config=SimpleNamespace(layers=[attention], max_context_length=8)
+            config=SimpleNamespace(
+                layers=[attention], max_context_length=8, padding_segments=None
+            )
         )
         return Decoder._get_attention_metadata(cast(Decoder, decoder), torch.arange(8))
 

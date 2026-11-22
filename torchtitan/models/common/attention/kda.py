@@ -36,6 +36,7 @@ from .attention import (
     create_varlen_metadata_for_document,
     InnerAttention,
     local_head_split,
+    PaddingSegmentsConfig,
 )
 from .linear_attention import (
     chunk_kernel_options,
@@ -159,6 +160,7 @@ class InnerKDA(InnerAttention):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> LinearAttentionMetadata:
             """Build packed-sequence metadata consumed by KDA."""
             return LinearAttentionMetadata(
@@ -167,6 +169,7 @@ class InnerKDA(InnerAttention):
                     padding_mask=padding_mask,
                     max_num_documents=max_num_documents,
                     max_context_length=max_context_length,
+                    padding_segments=padding_segments,
                 ),
                 num_conv_history_tokens=self.conv_kernel_size - 1,
             )

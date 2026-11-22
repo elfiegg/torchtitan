@@ -57,6 +57,7 @@ __all__ = [
     "FlexInnerAttention",
     "GQAttention",
     "InnerAttention",
+    "PaddingSegmentsConfig",
     "QKVLinear",
     "SlidingWindowFlexInnerAttention",
     "SlidingWindowVarlenInnerAttention",
@@ -71,6 +72,63 @@ __all__ = [
     "get_sliding_window_mask_mod",
     "local_head_split",
 ]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PaddingSegmentsConfig:
+    """Split the padding at the end of a packed row into short segments.
+
+    The document-aware packer pads each row after its last document. Without
+    this config the padding positions restart only every
+    ``max_context_length`` tokens, so varlen attention runs the whole tail as
+    one causal document. With it, the tail becomes at most
+    ``max_num_segments`` segments, each a multiple of ``segment_length``
+    tokens, and fixed-shape varlen metadata reserves room for them. Real
+    documents keep their offsets, so real-token attention is unchanged.
+
+    The packer and the attention metadata both read this one config, through
+    ``Decoder.Config.padding_segments``, so the segment count and the
+    reserved capacity always agree.
+    """
+
+    segment_length: int = 128
+    """Each padding segment is a multiple of this many tokens. It is capped at
+    ``max_context_length``. Use the attention kernel's tile size so padding
+    segments add no partial tiles."""
+
+    max_num_segments: int = 16
+    """Most padding segments in one row. Fixed-shape varlen metadata reserves
+    all of them, and each reserved segment adds empty kernel tiles on every
+    rank whether or not it is used. 0 allows one segment per
+    ``segment_length`` tokens of the row."""
+
+    def __post_init__(self) -> None:
+        if self.segment_length <= 0:
+            raise ValueError("segment_length must be positive")
+        if self.max_num_segments < 0:
+            raise ValueError("max_num_segments must be non-negative")
+
+    def capacity(self, num_tokens: int, max_context_length: int) -> int:
+        """Return the most padding segments one ``num_tokens`` row can hold."""
+        segment_length = min(self.segment_length, max_context_length)
+        num_segments = (num_tokens + segment_length - 1) // segment_length
+        if self.max_num_segments == 0:
+            return num_segments
+        return min(self.max_num_segments, num_segments)
+
+    def tail_segment_length(
+        self, num_padding_tokens: int, num_tokens: int, max_context_length: int
+    ) -> int:
+        """Return the segment length for ``num_padding_tokens`` of row padding.
+
+        The length is the smallest multiple of ``segment_length`` that fits
+        the padding in ``capacity()`` segments, capped at
+        ``max_context_length``.
+        """
+        segment_length = min(self.segment_length, max_context_length)
+        capacity = self.capacity(num_tokens, max_context_length)
+        tokens_per_segment = (max(num_padding_tokens, 1) + capacity - 1) // capacity
+        return min(round_up(tokens_per_segment, segment_length), max_context_length)
 
 
 class InnerAttention(Module):
@@ -90,6 +148,7 @@ class InnerAttention(Module):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> "AttentionMetadata | None":
             """Build metadata consumed by this inner attention, if any.
 
@@ -97,6 +156,7 @@ class InnerAttention(Module):
             ``None`` result.
             """
             del positions, padding_mask, max_num_documents, max_context_length
+            del padding_segments
             return None
 
 
@@ -408,6 +468,7 @@ class VarlenInnerAttention(InnerAttention, Generic[_VarlenMetadataT]):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> VarlenAttentionMetadata:
             """Build packed-sequence metadata consumed by Varlen attention."""
             return create_varlen_metadata_for_document(
@@ -415,6 +476,7 @@ class VarlenInnerAttention(InnerAttention, Generic[_VarlenMetadataT]):
                 padding_mask=padding_mask,
                 max_num_documents=max_num_documents,
                 max_context_length=max_context_length,
+                padding_segments=padding_segments,
             )
 
     def __init__(self, config: Config) -> None:
@@ -580,6 +642,7 @@ class SlidingWindowVarlenInnerAttention(VarlenInnerAttention[_VarlenMetadataT]):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> VarlenAttentionMetadata:
             """Build packed document metadata with a causal sliding window."""
             metadata = VarlenInnerAttention.Config.build_attention_metadata(
@@ -588,6 +651,7 @@ class SlidingWindowVarlenInnerAttention(VarlenInnerAttention[_VarlenMetadataT]):
                 padding_mask=padding_mask,
                 max_num_documents=max_num_documents,
                 max_context_length=max_context_length,
+                padding_segments=padding_segments,
             )
             return replace(metadata, window_size=(self.sliding_window_size - 1, 0))
 
@@ -691,9 +755,10 @@ class FlexInnerAttention(InnerAttention):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> FlexAttentionMetadata:
             """Build the standard document-causal FlexAttention BlockMask."""
-            del padding_mask, max_num_documents, max_context_length
+            del padding_mask, max_num_documents, max_context_length, padding_segments
             seq_len = positions.shape[0]
             return create_attention_mask(
                 and_masks(
@@ -873,9 +938,10 @@ class SlidingWindowFlexInnerAttention(FlexInnerAttention):
             padding_mask: torch.Tensor | None = None,
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
+            padding_segments: PaddingSegmentsConfig | None = None,
         ) -> FlexAttentionMetadata:
             """Build the document-causal sliding-window FlexAttention BlockMask."""
-            del padding_mask, max_num_documents, max_context_length
+            del padding_mask, max_num_documents, max_context_length, padding_segments
             seq_len = positions.shape[0]
             return create_attention_mask(
                 and_masks(
@@ -1089,6 +1155,7 @@ def create_varlen_metadata_for_document(
     padding_mask: torch.Tensor | None = None,
     max_num_documents: int | None = None,
     max_context_length: int | None = None,
+    padding_segments: PaddingSegmentsConfig | None = None,
 ) -> VarlenAttentionMetadata:
     """Creates cumulative sequence length indices needed for variable length attention.
 
@@ -1108,6 +1175,10 @@ def create_varlen_metadata_for_document(
         max_context_length: Maximum length of one document segment. Required
             with ``max_num_documents`` so the fixed-shape metadata can avoid a
             device-to-host synchronization.
+        padding_segments: How the packer split the row-tail padding. With
+            ``max_num_documents`` and ``padding_mask``, the fixed-shape
+            metadata reserves ``padding_segments.capacity()`` more padding
+            segments. None reserves one per ``max_context_length`` tokens.
 
     Returns:
         VarlenAttentionMetadata containing cumulative sequence length indices for q, k,
@@ -1137,6 +1208,10 @@ def create_varlen_metadata_for_document(
             if padding_mask is not None
             else 0
         )
+        if padding_mask is not None and padding_segments is not None:
+            max_num_padding_segments += padding_segments.capacity(
+                num_tokens, max_context_length
+            )
         max_num_segments = max_num_documents + max_num_padding_segments
         num_slots = max_num_segments + 1
         slot = torch.cumsum(is_doc_start, 0) - 1

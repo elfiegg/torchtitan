@@ -17,6 +17,7 @@ from torchtitan.components.data.dataset import DatasetConfig, TextSequence
 from torchtitan.components.data.padding import append_padded_segment
 from torchtitan.components.data.types import DatasetBuildContext, DatasetIterationPolicy
 from torchtitan.components.loss import IGNORE_INDEX
+from torchtitan.models.common.attention import PaddingSegmentsConfig
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -54,6 +55,7 @@ class ConcatThenSplitPackingConfig:
                 max_context_length=context.max_context_length,
                 num_tokens_per_row=context.num_tokens_per_microbatch,
                 per_sample_pad_multiple=context.per_sample_pad_multiple,
+                padding_segments=context.padding_segments,
             )
         dataset = dataset.map(
             partial(
@@ -92,12 +94,14 @@ class _DocumentAwareConcatThenSplitIterDataset(grain.IterDataset):
         max_context_length: int,
         num_tokens_per_row: int,
         per_sample_pad_multiple: int,
+        padding_segments: PaddingSegmentsConfig | None,
     ) -> None:
         super().__init__(parent)
         self._max_num_documents_per_row = max_num_documents_per_row
         self._max_context_length = max_context_length
         self._num_tokens_per_row = num_tokens_per_row
         self._per_sample_pad_multiple = per_sample_pad_multiple
+        self._padding_segments = padding_segments
 
     def __iter__(self) -> grain.DatasetIterator:
         return _DocumentAwareConcatThenSplitIterator(
@@ -106,6 +110,7 @@ class _DocumentAwareConcatThenSplitIterDataset(grain.IterDataset):
             max_context_length=self._max_context_length,
             num_tokens_per_row=self._num_tokens_per_row,
             per_sample_pad_multiple=self._per_sample_pad_multiple,
+            padding_segments=self._padding_segments,
         )
 
 
@@ -120,12 +125,14 @@ class _DocumentAwareConcatThenSplitIterator(grain.DatasetIterator):
         max_context_length: int,
         num_tokens_per_row: int,
         per_sample_pad_multiple: int,
+        padding_segments: PaddingSegmentsConfig | None,
     ) -> None:
         super().__init__(parent)
         self._max_num_documents_per_row = max_num_documents_per_row
         self._max_context_length = max_context_length
         self._num_tokens_per_row = num_tokens_per_row
         self._per_sample_pad_multiple = per_sample_pad_multiple
+        self._padding_segments = padding_segments
         self._remainder: TextSequence | None = None
         self._remainder_parent_state: dict[str, Any] | None = None
         self._remainder_offset = 0
@@ -208,8 +215,13 @@ class _DocumentAwareConcatThenSplitIterator(grain.DatasetIterator):
         padding_mask = np.concatenate(parts["padding_mask"])
         pad_len = self._num_tokens_per_row - num_tokens
         if pad_len:
+            padding_segment_length = self._max_context_length
+            if self._padding_segments is not None:
+                padding_segment_length = self._padding_segments.tail_segment_length(
+                    pad_len, self._num_tokens_per_row, self._max_context_length
+                )
             padding_positions = (
-                np.arange(pad_len, dtype=positions.dtype) % self._max_context_length
+                np.arange(pad_len, dtype=positions.dtype) % padding_segment_length
             )
             input_ids = np.pad(input_ids, (0, pad_len))
             labels = np.pad(labels, (0, pad_len), constant_values=IGNORE_INDEX)

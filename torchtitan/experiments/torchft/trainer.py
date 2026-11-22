@@ -225,6 +225,7 @@ class FaultTolerantTrainer(Configurable):
             max_context_length=config.model.max_context_length,
             num_tokens_per_microbatch=num_tokens_per_microbatch,
             vision_processor=self.vision_processor,
+            padding_segments=getattr(config.model, "padding_segments", None),
         )
 
         # metrics logging (FT addition: ft_enable, ft_replica_id)

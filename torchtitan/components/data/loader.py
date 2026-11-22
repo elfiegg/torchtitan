@@ -26,6 +26,7 @@ from torchtitan.components.data.types import (
 )
 from torchtitan.components.tokenizer import BaseTokenizer
 from torchtitan.config import Configurable
+from torchtitan.models.common.attention import PaddingSegmentsConfig
 
 
 # NOTE: This class deliberately inherits from `Exception` and not `StopIteration`.
@@ -114,6 +115,7 @@ class GrainDataLoader(BaseDataLoader):
         max_context_length: int,
         num_tokens_per_microbatch: int,
         vision_processor: VisionProcessor | None = None,
+        padding_segments: PaddingSegmentsConfig | None = None,
         **kwargs: Any,
     ) -> None:
         del kwargs
@@ -127,6 +129,15 @@ class GrainDataLoader(BaseDataLoader):
                 "repeat=False with data parallelism can exhaust ranks at different "
                 "steps and hang collectives; use repeat=True with a trainer-"
                 "controlled step count"
+            )
+        if padding_segments is not None and (
+            config.max_num_documents is None
+            or not isinstance(config.dataset, ConcatThenSplitPackingConfig)
+        ):
+            raise ValueError(
+                "padding_segments requires max_num_documents and "
+                "ConcatThenSplitPackingConfig, whose document-aware packer "
+                "splits the row-tail padding."
             )
         self._dp_world_size = dp_world_size
         self._rank_id = f"dp_rank_{dp_rank}"
@@ -142,6 +153,7 @@ class GrainDataLoader(BaseDataLoader):
             max_num_documents=config.max_num_documents,
             num_mtp_layers=config.num_mtp_layers,
             per_sample_pad_multiple=config.per_sample_pad_multiple,
+            padding_segments=padding_segments,
             vision_processor=vision_processor,
         )
         dataset_iteration_policy = DatasetIterationPolicy(

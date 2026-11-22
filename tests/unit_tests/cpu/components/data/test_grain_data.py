@@ -45,6 +45,7 @@ from torchtitan.components.data.types import (
     TrainingMicrobatch,
 )
 from torchtitan.components.loss import IGNORE_INDEX
+from torchtitan.models.common.attention import PaddingSegmentsConfig
 
 
 class FakeTokenizer:
@@ -1115,6 +1116,111 @@ def test_document_aware_concat_packing_restores_exactly():
         np.testing.assert_array_equal(actual_row.positions, expected_row.positions)
         np.testing.assert_array_equal(
             actual_row.padding_mask, expected_row.padding_mask
+        )
+
+
+@pytest.mark.parametrize(
+    "max_context_length, padding_segments",
+    [
+        (256, PaddingSegmentsConfig(segment_length=16, max_num_segments=4)),
+        (256, PaddingSegmentsConfig(segment_length=16, max_num_segments=0)),
+        # Segments are capped at a context shorter than the row.
+        (64, PaddingSegmentsConfig(segment_length=16, max_num_segments=2)),
+    ],
+)
+def test_document_aware_packing_splits_tail_padding(
+    max_context_length, padding_segments
+):
+    rng = np.random.default_rng(0)
+    lengths = rng.integers(2, 90, size=120)
+    documents = SingleDatasetConfig(
+        source=RowsSourceConfig(
+            rows=tuple(
+                {"tokens": rng.integers(10, 200, size=length).tolist()}
+                for length in lengths
+            )
+        ),
+        processor=RowToTokens.Config(),
+    )
+    context = replace(
+        CONTEXT,
+        max_context_length=max_context_length,
+        num_tokens_per_microbatch=256,
+        max_num_documents=4,
+    )
+    policy = dataset_iteration_policy(shuffle=False, repeat=False)
+    config = ConcatThenSplitPackingConfig(dataset=documents)
+    baseline = list(config.build(context=context, dataset_iteration_policy=policy))
+    split = list(
+        config.build(
+            context=replace(context, padding_segments=padding_segments),
+            dataset_iteration_policy=policy,
+        )
+    )
+
+    # The padding segments the varlen metadata reserves for one row.
+    capacity = padding_segments.capacity(256, max_context_length) + -(
+        -256 // max_context_length
+    )
+    num_padded_rows = 0
+    assert len(split) == len(baseline)
+    for baseline_row, split_row in zip(baseline, split, strict=True):
+        np.testing.assert_array_equal(split_row.input_ids, baseline_row.input_ids)
+        np.testing.assert_array_equal(split_row.labels, baseline_row.labels)
+        np.testing.assert_array_equal(split_row.padding_mask, baseline_row.padding_mask)
+        real_tokens = int(np.flatnonzero(~baseline_row.padding_mask)[-1]) + 1
+        num_padding = 256 - real_tokens
+        np.testing.assert_array_equal(
+            split_row.positions[:real_tokens], baseline_row.positions[:real_tokens]
+        )
+        if num_padding == 0:
+            continue
+        num_padded_rows += 1
+        # Off: the tail restarts every max_context_length tokens.
+        np.testing.assert_array_equal(
+            baseline_row.positions[real_tokens:],
+            np.arange(num_padding) % max_context_length,
+        )
+        segment_length = padding_segments.tail_segment_length(
+            num_padding, 256, max_context_length
+        )
+        assert (
+            segment_length % padding_segments.segment_length == 0
+            or segment_length == max_context_length
+        )
+        np.testing.assert_array_equal(
+            split_row.positions[real_tokens:],
+            np.arange(num_padding) % segment_length,
+        )
+        assert np.count_nonzero(split_row.positions[real_tokens:] == 0) <= capacity
+    assert num_padded_rows > 10
+
+
+@pytest.mark.parametrize(
+    "dataset, max_num_documents",
+    [
+        (ConcatThenSplitPackingConfig, None),
+        (FirstFitPackingConfig, 4),
+    ],
+)
+def test_loader_rejects_padding_segments_without_document_aware_packing(
+    dataset, max_num_documents
+):
+    documents = SingleDatasetConfig(
+        source=RowsSourceConfig(rows=({"tokens": [1, 2, 3]},)),
+        processor=RowToTokens.Config(),
+    )
+    with pytest.raises(ValueError, match="padding_segments requires"):
+        GrainDataLoader.Config(
+            dataset=dataset(dataset=documents),
+            max_num_documents=max_num_documents,
+        ).build(
+            dp_world_size=1,
+            dp_rank=0,
+            tokenizer=FakeTokenizer(),
+            max_context_length=8,
+            num_tokens_per_microbatch=16,
+            padding_segments=PaddingSegmentsConfig(),
         )
 
 

@@ -23,6 +23,7 @@ from torchtitan.models.common.attention import (
     AttentionMetadata,
     AttentionMetadataMap,
     InnerAttention,
+    PaddingSegmentsConfig,
     SlidingWindowFlexInnerAttention,
     SlidingWindowVarlenInnerAttention,
 )
@@ -94,6 +95,12 @@ class Decoder(BaseModel):
         # itself is handled by ``Decoder.__init__``, ``Decoder._parallelize``
         # and ``Decoder.init_states``.
         enable_weight_tying: bool = False
+        padding_segments: PaddingSegmentsConfig | None = None
+        """Split each packed row's tail padding into short varlen segments.
+        The trainer hands this config to the dataloader's document-aware
+        packer, and fixed-shape varlen metadata reserves the segments it can
+        produce. None pads the tail as one segment per ``max_context_length``
+        tokens."""
 
         def __post_init__(self) -> None:
             if self.enable_weight_tying:
@@ -548,6 +555,7 @@ class Decoder(BaseModel):
                     padding_mask=padding_mask,
                     max_num_documents=max_num_documents,
                     max_context_length=self.config.max_context_length,
+                    padding_segments=self.config.padding_segments,
                 )
                 if metadata is not None:
                     attention_metadata[backend] = metadata

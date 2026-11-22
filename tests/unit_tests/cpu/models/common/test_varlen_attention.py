@@ -29,6 +29,7 @@ from torchtitan.distributed.spmd_types import _per_axis_types
 from torchtitan.models.common.attention import (
     create_varlen_metadata_for_document,
     GQAttention,
+    PaddingSegmentsConfig,
     QKVLinear,
     SlidingWindowFlexInnerAttention,
     SlidingWindowVarlenInnerAttention,
@@ -36,6 +37,7 @@ from torchtitan.models.common.attention import (
     VarlenInnerAttention,
 )
 from torchtitan.models.common.attention.cp_attention import (
+    _chunk_varlen_metadata,
     UlyssesSlidingWindowVarlenInnerAttention,
     UlyssesVarlenInnerAttention,
 )
@@ -203,6 +205,242 @@ def test_cp_conversion_preserves_varlen_options(config, cp_backend, kernel_windo
     assert converted.sdpa_backends == config.sdpa_backends
     metadata = converted.build_attention_metadata(torch.arange(8))
     assert metadata.window_size == kernel_window_size
+
+
+_PACKED_ROW_TOKENS = 64
+_PACKED_ROW_DOCUMENT_LENGTHS = (10, 7, 5)
+# 22 real tokens and 42 padding tokens. Four padding segments of a multiple of
+# 8 tokens fit 42 tokens as 16 + 16 + 10.
+_PADDING_SEGMENTS = PaddingSegmentsConfig(segment_length=8, max_num_segments=4)
+
+
+def _packed_row(
+    padding_segments: PaddingSegmentsConfig | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return ``(positions_T, padding_mask_T)`` as the document-aware packer
+    lays out one row: three documents, then tail padding."""
+    num_real_tokens = sum(_PACKED_ROW_DOCUMENT_LENGTHS)
+    num_padding = _PACKED_ROW_TOKENS - num_real_tokens
+    segment_length = (
+        _PACKED_ROW_TOKENS
+        if padding_segments is None
+        else padding_segments.tail_segment_length(
+            num_padding, _PACKED_ROW_TOKENS, _PACKED_ROW_TOKENS
+        )
+    )
+    positions_T = torch.cat(
+        [torch.arange(length) for length in _PACKED_ROW_DOCUMENT_LENGTHS]
+        + [torch.arange(num_padding) % segment_length]
+    )
+    padding_mask_T = torch.arange(_PACKED_ROW_TOKENS) >= num_real_tokens
+    return positions_T, padding_mask_T
+
+
+def _packed_row_metadata(
+    positions_T: torch.Tensor,
+    padding_mask_T: torch.Tensor,
+    padding_segments: PaddingSegmentsConfig | None,
+) -> VarlenAttentionMetadata:
+    return create_varlen_metadata_for_document(
+        positions_T,
+        padding_mask=padding_mask_T,
+        max_num_documents=4,
+        max_context_length=_PACKED_ROW_TOKENS,
+        padding_segments=padding_segments,
+    )
+
+
+@pytest.mark.parametrize(
+    "segment_length, max_num_segments, max_context_length, num_padding, "
+    "capacity, tail_segment_length",
+    [
+        (128, 16, 32768, 7700, 16, 512),
+        (128, 16, 32768, 13000, 16, 896),
+        (128, 16, 32768, 1, 16, 128),
+        (128, 0, 32768, 7700, 256, 128),
+        (512, 64, 32768, 7700, 64, 512),
+        # A context shorter than the segment caps both.
+        (128, 16, 100, 7700, 16, 100),
+    ],
+)
+def test_padding_segments_capacity_and_length(
+    segment_length,
+    max_num_segments,
+    max_context_length,
+    num_padding,
+    capacity,
+    tail_segment_length,
+):
+    config = PaddingSegmentsConfig(
+        segment_length=segment_length, max_num_segments=max_num_segments
+    )
+    assert config.capacity(32768, max_context_length) == capacity
+    length = config.tail_segment_length(num_padding, 32768, max_context_length)
+    assert length == tail_segment_length
+    # The segments fit the reserve: at most capacity segments, plus the
+    # ceil(T / max_context_length) the metadata reserves regardless.
+    assert -(-num_padding // length) <= capacity + -(-32768 // max_context_length)
+
+
+def test_padding_segments_keep_real_document_cp_chunks():
+    """Splitting the tail changes no real document's offsets or CP chunks."""
+    baseline = _packed_row_metadata(*_packed_row(None), None)
+    split = _packed_row_metadata(*_packed_row(_PADDING_SEGMENTS), _PADDING_SEGMENTS)
+
+    # 4 documents + 1 padding segment per max_context_length tokens (+ 4 split
+    # padding segments) + 1 end offset.
+    torch.testing.assert_close(
+        baseline.cu_seq_q, torch.tensor([0, 10, 17, 22, 64, 64], dtype=torch.int32)
+    )
+    torch.testing.assert_close(
+        split.cu_seq_q,
+        torch.tensor([0, 10, 17, 22, 38, 54, 64, 64, 64, 64], dtype=torch.int32),
+    )
+    assert (split.max_q, split.max_k) == (baseline.max_q, baseline.max_k)
+
+    num_real_documents = len(_PACKED_ROW_DOCUMENT_LENGTHS)
+    half = _PACKED_ROW_TOKENS // 2
+    for q_start in (0, half):
+        for window_size in ((-1, 0), (7, 0)):
+            left = window_size[0]
+            lookback = baseline.max_k if left == -1 else min(left, baseline.max_k)
+            chunks = [
+                _chunk_varlen_metadata(
+                    replace(metadata, window_size=window_size),
+                    q_start=q_start,
+                    end=q_start + half,
+                    kv_start=max(0, q_start - lookback),
+                )
+                for metadata in (baseline, split)
+            ]
+            for cu_seq in ("cu_seq_q", "cu_seq_k"):
+                torch.testing.assert_close(
+                    getattr(chunks[1], cu_seq)[: num_real_documents + 1],
+                    getattr(chunks[0], cu_seq)[: num_real_documents + 1],
+                )
+
+
+def test_padding_segments_need_the_metadata_reserve():
+    """Without the reserve, the split tail overflows the padding capacity."""
+    positions_T, padding_mask_T = _packed_row(_PADDING_SEGMENTS)
+    with pytest.raises(RuntimeError):
+        _packed_row_metadata(positions_T, padding_mask_T, None)
+
+
+def test_padding_segments_keep_loss_and_gradients():
+    """A causal document-masked model gets the same loss and gradients.
+
+    Padding labels are ignored, so padding rows get exactly zero gradient and
+    contribute exact zeros to every weight gradient, while real tokens never
+    attend to padding. Only the padding outputs change.
+    """
+    dim, num_heads, head_dim, vocab_size = 32, 4, 8, 97
+
+    def run(padding_segments):
+        positions_T, padding_mask_T = _packed_row(padding_segments)
+        cu_seq = _packed_row_metadata(
+            positions_T, padding_mask_T, padding_segments
+        ).cu_seq_q
+        generator = torch.Generator().manual_seed(0)
+        tokens_T = torch.randint(
+            0, vocab_size, (_PACKED_ROW_TOKENS,), generator=generator
+        )
+        labels_T = torch.randint(
+            0, vocab_size, (_PACKED_ROW_TOKENS,), generator=generator
+        )
+        labels_T = labels_T.masked_fill(padding_mask_T, -100)
+        params = {
+            name: (torch.randn(*shape, generator=generator) * 0.1).requires_grad_()
+            for name, shape in (
+                ("embedding", (vocab_size, dim)),
+                ("wqkv", (3 * dim, dim)),
+                ("wo", (dim, dim)),
+                ("w1", (4 * dim, dim)),
+                ("w2", (dim, 4 * dim)),
+                ("lm_head", (vocab_size, dim)),
+            )
+        }
+        token_index_T = torch.arange(_PACKED_ROW_TOKENS, dtype=cu_seq.dtype)
+        document_T = torch.searchsorted(cu_seq, token_index_T, right=True)
+        mask_TT = (document_T[:, None] == document_T[None, :]) & torch.ones(
+            _PACKED_ROW_TOKENS, _PACKED_ROW_TOKENS, dtype=torch.bool
+        ).tril()
+        frequencies_TK = positions_T[:, None] / (
+            10000 ** (torch.arange(head_dim // 2) / (head_dim // 2))
+        )
+        cos_TK, sin_TK = frequencies_TK.cos()[:, None], frequencies_TK.sin()[:, None]
+
+        def rope(x_THK):
+            x1, x2 = x_THK.chunk(2, dim=-1)
+            return torch.cat([x1 * cos_TK - x2 * sin_TK, x1 * sin_TK + x2 * cos_TK], -1)
+
+        # F.embedding, not advanced indexing: the CPU backward of indexing
+        # accumulates in a run-to-run nondeterministic order.
+        h_TD = torch.nn.functional.embedding(tokens_T, params["embedding"])
+        for _ in range(2):
+            q_THK, k_THK, v_THK = (
+                (h_TD @ params["wqkv"].T)
+                .view(_PACKED_ROW_TOKENS, 3, num_heads, head_dim)
+                .unbind(1)
+            )
+            attention_HTK = torch.nn.functional.scaled_dot_product_attention(
+                rope(q_THK).transpose(0, 1),
+                rope(k_THK).transpose(0, 1),
+                v_THK.transpose(0, 1),
+                attn_mask=mask_TT,
+            )
+            h_TD = h_TD + attention_HTK.transpose(0, 1).flatten(1) @ params["wo"].T
+            h_TD = (
+                h_TD + torch.nn.functional.silu(h_TD @ params["w1"].T) @ params["w2"].T
+            )
+        logits_TV = h_TD @ params["lm_head"].T
+        loss = torch.nn.functional.cross_entropy(logits_TV, labels_T, ignore_index=-100)
+        loss.backward()
+        grads = {name: param.grad for name, param in params.items()}
+        return loss.detach(), logits_TV.detach(), padding_mask_T, grads
+
+    baseline_loss, baseline_logits, padding_mask_T, baseline_grads = run(None)
+    split_loss, split_logits, _, split_grads = run(_PADDING_SEGMENTS)
+    assert torch.equal(split_loss, baseline_loss)
+    assert torch.equal(split_logits[~padding_mask_T], baseline_logits[~padding_mask_T])
+    assert not torch.equal(
+        split_logits[padding_mask_T], baseline_logits[padding_mask_T]
+    )
+    for name, grad in baseline_grads.items():
+        assert torch.equal(split_grads[name], grad), name
+
+
+def test_decoder_reserves_padding_segments():
+    from torchtitan.models.llama3 import build_model_config
+
+    config = build_model_config("debugmodel", parallelism=ParallelismConfig())
+    template = config.layers[0]
+    config = replace(
+        config,
+        max_context_length=_PACKED_ROW_TOKENS,
+        padding_segments=_PADDING_SEGMENTS,
+        layers=[
+            replace(
+                template, attention=replace(template.attention, inner_attention=inner)
+            )
+            for inner in (
+                VarlenInnerAttention.Config(),
+                SlidingWindowVarlenInnerAttention.Config(sliding_window_size=4),
+            )
+        ],
+    )
+    positions_T, padding_mask_T = _packed_row(_PADDING_SEGMENTS)
+    metadata = Decoder._get_attention_metadata(
+        cast(Decoder, SimpleNamespace(config=config)),
+        positions_T,
+        padding_mask=padding_mask_T,
+        max_num_documents=4,
+    )
+    expected = _packed_row_metadata(positions_T, padding_mask_T, _PADDING_SEGMENTS)
+    for backend in (VarlenInnerAttention, SlidingWindowVarlenInnerAttention):
+        backend_metadata = metadata[backend]
+        assert isinstance(backend_metadata, VarlenAttentionMetadata)
+        torch.testing.assert_close(backend_metadata.cu_seq_q, expected.cu_seq_q)
 
 
 class TestPackedVarlenAttentionMetadata(unittest.TestCase):
