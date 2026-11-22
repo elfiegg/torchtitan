@@ -75,6 +75,7 @@ from torchtitan.models.common.decoder_sharding import (
     cp_vocab_parallel_lm_head_sharding_config,
     cp_vocab_parallel_token_embedding_sharding_config,
 )
+from torchtitan.models.common.dist_moe import DistMoeRoutedExperts
 from torchtitan.models.common.moe import (
     RoundRobinTokenChoiceTopKRouter,
     RoutedExperts,
@@ -82,7 +83,12 @@ from torchtitan.models.common.moe import (
 )
 
 from torchtitan.models.muse_spark import build_model_config, MUSE_SPARK_SPECIAL_TOKENS
-from torchtitan.models.muse_spark.model import MuseSparkModel, MuseSparkMultimodalModel
+from torchtitan.models.muse_spark.model import (
+    MuseSparkModel,
+    MuseSparkMultimodalModel,
+    MuseSparkRMSNormWithInputScale,
+)
+from torchtitan.models.muse_spark.moe import MuseSparkMoE
 from torchtitan.models.muse_spark.renderer import MuseSparkRendererConfig
 from torchtitan.models.muse_spark.tokenizer import MuseSparkTokenizer
 from torchtitan.observability.metrics import MetricsProcessor
@@ -246,6 +252,41 @@ def use_flex_flash_attention(model_config: MuseSparkModel.Config) -> None:
             kernel_options={**inner_attention.kernel_options, "BACKEND": "FLASH"},
         )
         attention.inner_attention = inner_attention
+
+
+def use_fused_dist_moe_post_expert_norm(model_config: MuseSparkModel.Config) -> None:
+    """Run the Dist-MoE post-expert norm with fused Triton kernels.
+
+    Converts every routed-expert ``output_postprocess`` to
+    ``FusedDistMoeInputScaledRMSNorm``. The parameters and checkpoint layout are
+    unchanged; only the callback Dist-MoE runs changes. Call it after Dist-MoE
+    replaces the routed experts. Outputs and input gradients stay within a few
+    bf16 ulps of the compiled region; see
+    ``torchtitan/models/muse_spark/input_scaled_rmsnorm.py``.
+    """
+    # Triton is imported only when the fused norm is selected.
+    from torchtitan.models.muse_spark.input_scaled_rmsnorm import (
+        FusedDistMoeInputScaledRMSNorm,
+    )
+
+    for fqn, moe, _parent, _attr in model_config.traverse(MuseSparkMoE.Config):
+        routed_experts = moe.routed_experts
+        owner = routed_experts._owner
+        if owner is None or not issubclass(owner, DistMoeRoutedExperts):
+            raise ValueError(
+                f"{fqn}.routed_experts is {type(routed_experts).__qualname__}; the "
+                "fused post-expert norm replaces only the Dist-MoE callback"
+            )
+        postprocess = routed_experts.output_postprocess
+        if type(postprocess) is not MuseSparkRMSNormWithInputScale.Config:
+            raise TypeError(
+                f"{fqn}.routed_experts.output_postprocess must be a "
+                "MuseSparkRMSNormWithInputScale.Config, got "
+                f"{type(postprocess).__qualname__}"
+            )
+        routed_experts.output_postprocess = convert_config_type(
+            postprocess, FusedDistMoeInputScaledRMSNorm
+        )
 
 
 # TODO: Add production Muse Spark Open video and audio datasets.

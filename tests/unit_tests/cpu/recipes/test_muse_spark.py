@@ -11,7 +11,8 @@ from torchtitan.models.common.attention.cp_attention import (
     UlyssesSlidingWindowVarlenInnerAttention,
     UlyssesVarlenInnerAttention,
 )
-from torchtitan.models.muse_spark import MUSE_SPARK_SPECIAL_TOKENS
+from torchtitan.models.muse_spark import build_model_config, MUSE_SPARK_SPECIAL_TOKENS
+from torchtitan.models.muse_spark.model import MuseSparkRMSNormWithInputScale
 from torchtitan.models.muse_spark.tokenizer import MuseSparkTokenizer
 
 from torchtitan_recipes.models import muse_spark as recipes
@@ -87,6 +88,25 @@ def test_dist_moe_64_mxfp8_recipe_quantizes_experts_and_projections():
         assert isinstance(feed_forward.pooler, MXFP8Linear.Config)
         assert isinstance(feed_forward.unpooler, MXFP8Linear.Config)
         assert isinstance(layer.attention.wo, MXFP8Linear.Config)
+
+
+def test_use_fused_dist_moe_post_expert_norm():
+    pytest.importorskip("dist_moe")
+    pytest.importorskip("triton")
+    from torchtitan.models.muse_spark.input_scaled_rmsnorm import (
+        FusedDistMoeInputScaledRMSNorm,
+    )
+
+    config = recipes.muse_spark_816b_a42b_dist_moe_bf16_spmd_64_fake()
+    recipes.use_fused_dist_moe_post_expert_norm(config.model)
+    for layer in config.model.layers:
+        postprocess = layer.feed_forward.routed_experts.output_postprocess
+        assert isinstance(postprocess, FusedDistMoeInputScaledRMSNorm.Config)
+        # The block's post-FFN norm is not a Dist-MoE callback; it keeps the module.
+        assert type(layer.post_ffn_norm) is MuseSparkRMSNormWithInputScale.Config
+    # Without Dist-MoE nothing would run the fused callback.
+    with pytest.raises(ValueError, match="Dist-MoE"):
+        recipes.use_fused_dist_moe_post_expert_norm(build_model_config("debugmodel"))
 
 
 @pytest.mark.parametrize("recipe", [muse_spark_debugmodel, muse_spark_debugmodel_mm])
