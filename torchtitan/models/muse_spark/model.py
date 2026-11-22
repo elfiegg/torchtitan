@@ -280,11 +280,26 @@ class MuseSparkAttention(GQAttention):
 class MuseSparkRMSNorm(RMSNorm):
     @dataclass(kw_only=True, slots=True)
     class Config(RMSNorm.Config):
+        """Muse Spark RMSNorm config.
+
+        Args:
+            gain_center: Offset added to the stored weight; the effective gain is
+                ``weight + gain_center``.
+            output_dtype: Dtype of the returned tensor. ``None`` returns the input
+                dtype. A caller that casts the output (the transformer block casts
+                its fp32 pre-norm outputs to ``branch_dtype``) can set it to that
+                dtype, so the cast runs inside the compiled region instead of as
+                separate cast kernels in forward and backward. The norm math is
+                unchanged, and the fp32 result is rounded once.
+        """
+
         gain_center: float = 1.0
+        output_dtype: torch.dtype | None = None
 
     def __init__(self, config: Config):
         super().__init__(config)
         self.gain_center = config.gain_center
+        self.output_dtype = config.output_dtype
         # Compiled code reads gain_center from this tensor, so every graph takes it as an
         # input and saves the same tensors. A float is baked into layer 0's graph, and remat
         # recompute of layer 0 can run layer 1's graph, which saves different tensors
@@ -319,7 +334,9 @@ class MuseSparkRMSNorm(RMSNorm):
             effective_weight_D,
             self.eps,
         )
-        return output_TD.to(input_dtype)
+        return output_TD.to(
+            input_dtype if self.output_dtype is None else self.output_dtype
+        )
 
 
 class MuseSparkRMSNormWithInputScale(MuseSparkRMSNorm):
@@ -334,7 +351,9 @@ class MuseSparkRMSNormWithInputScale(MuseSparkRMSNorm):
         if effective_weight_D is not None:
             input = effective_weight_D * input
         output_TD = F.rms_norm(input, self.normalized_shape, None, self.eps)
-        return output_TD.to(input_dtype)
+        return output_TD.to(
+            input_dtype if self.output_dtype is None else self.output_dtype
+        )
 
     def to_dist_moe_postprocess(
         self,
@@ -438,6 +457,18 @@ class MuseSparkTransformerBlock(TransformerBlock):
         ffn_residual: MuseSparkNormPreservingResidualConnection.Config
         branch_dtype: torch.dtype = torch.bfloat16
 
+        def __post_init__(self) -> None:
+            super(MuseSparkTransformerBlock.Config, self).__post_init__()
+            # forward casts the pre-norm outputs to branch_dtype. A norm that
+            # rounds to another dtype first would round twice.
+            for name in ("attention_norm", "ffn_norm"):
+                output_dtype = getattr(getattr(self, name), "output_dtype", None)
+                if output_dtype not in (None, self.branch_dtype):
+                    raise ValueError(
+                        f"{name}.output_dtype must be None or branch_dtype "
+                        f"({self.branch_dtype}), got {output_dtype}"
+                    )
+
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.attention = config.attention.build()
@@ -460,6 +491,8 @@ class MuseSparkTransformerBlock(TransformerBlock):
         padding_mask: torch.Tensor | None = None,
         aux_loss_denominator: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        # The casts are no-ops when the norms already return branch_dtype
+        # (MuseSparkRMSNorm.Config.output_dtype).
         attention_input_TD = self.attention_norm(x).to(self.branch_dtype)
         attention_output_TD = self.attention(
             attention_input_TD,

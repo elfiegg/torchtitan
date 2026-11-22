@@ -170,6 +170,29 @@ multiple of 256: the production flavors use 4096, but `debugmodel` uses 128 and
 cannot run with DeepEP. DeepEP is verified with FSDP, with TP+EP, and with
 Ulysses CP+EP.
 
+## Fused pre-norm cast
+
+The residual stream is FP32, so `attention_norm` and `ffn_norm` return FP32 and
+the block casts their outputs to `branch_dtype` (BF16). By default that cast
+runs eagerly after the compiled `muse_spark_rmsnorm` region: one cast kernel in
+forward (and again in remat recompute) and one in backward, per pre-norm, plus
+an FP32 write and read of the norm output.
+
+`MuseSparkRMSNorm.Config.output_dtype` moves the cast into the compiled region.
+`use_fused_pre_norm_cast(model_config)` in `torchtitan_recipes.models.muse_spark`
+sets it to `branch_dtype` on both pre-norms of every layer:
+
+```python
+config = muse_spark_816b_a42b_dist_moe_bf16_spmd_64_benchmark()
+use_fused_pre_norm_cast(config.model)
+```
+
+The FP32 norm math is unchanged and is rounded once (round to nearest even),
+as by the eager cast, so the block output and every gradient match the default
+path bitwise. The norm kernel writes BF16 instead of FP32, and its backward reads
+a BF16 gradient. On a BF16 variant of the 64-GPU benchmark recipe this saved
+about 61 ms per step (about 1%). No recipe enables it by default.
+
 ## TODO
 
 - Reject a DeepEP hidden size that is not a multiple of 256 at config time, in

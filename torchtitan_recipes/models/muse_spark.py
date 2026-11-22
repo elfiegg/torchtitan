@@ -82,7 +82,11 @@ from torchtitan.models.common.moe import (
 )
 
 from torchtitan.models.muse_spark import build_model_config, MUSE_SPARK_SPECIAL_TOKENS
-from torchtitan.models.muse_spark.model import MuseSparkModel, MuseSparkMultimodalModel
+from torchtitan.models.muse_spark.model import (
+    MuseSparkModel,
+    MuseSparkMultimodalModel,
+    MuseSparkRMSNorm,
+)
 from torchtitan.models.muse_spark.renderer import MuseSparkRendererConfig
 from torchtitan.models.muse_spark.tokenizer import MuseSparkTokenizer
 from torchtitan.observability.metrics import MetricsProcessor
@@ -246,6 +250,32 @@ def use_flex_flash_attention(model_config: MuseSparkModel.Config) -> None:
             kernel_options={**inner_attention.kernel_options, "BACKEND": "FLASH"},
         )
         attention.inner_attention = inner_attention
+
+
+def use_fused_pre_norm_cast(model_config: MuseSparkModel.Config) -> None:
+    """Round the pre-norm outputs to ``branch_dtype`` inside the compiled norm.
+
+    Removes the eager cast kernels after ``attention_norm`` and ``ffn_norm`` in
+    forward, remat recompute, and backward. The fp32 norm math is unchanged and
+    rounded once, as by the eager cast, so the block output and every gradient
+    match the default path bitwise (see ``MuseSparkRMSNorm.Config.output_dtype``).
+    """
+    for layer_id, layer in enumerate(model_config.layers):
+        for name in ("attention_norm", "ffn_norm"):
+            norm = getattr(layer, name)
+            if not isinstance(norm, MuseSparkRMSNorm.Config):
+                raise TypeError(
+                    f"layers.{layer_id}.{name} must be a MuseSparkRMSNorm.Config, "
+                    f"got {type(norm).__qualname__}"
+                )
+        # replace() reruns the block config's validation.
+        model_config.layers[layer_id] = replace(
+            layer,
+            attention_norm=replace(
+                layer.attention_norm, output_dtype=layer.branch_dtype
+            ),
+            ffn_norm=replace(layer.ffn_norm, output_dtype=layer.branch_dtype),
+        )
 
 
 # TODO: Add production Muse Spark Open video and audio datasets.
