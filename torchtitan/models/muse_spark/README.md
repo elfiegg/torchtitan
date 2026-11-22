@@ -193,6 +193,41 @@ path bitwise. The norm kernel writes BF16 instead of FP32, and its backward read
 a BF16 gradient. On a BF16 variant of the 64-GPU benchmark recipe this saved
 about 61 ms per step (about 1%). No recipe enables it by default.
 
+## Fused Dist-MoE post-expert norm
+
+Every routed expert output row is normalized by
+`MuseSparkRMSNormWithInputScale`, `y = rmsnorm((weight + gain_center) * x)`.
+Its weight is trained, so Dist-MoE runs it as an eager callback: a forward
+without grad, then a replay under `enable_grad` and `.backward` in the
+Dist-MoE backward. By default the callback is the module, whose compiled
+region uses looped reductions plus a separate weight-gradient column
+reduction that reads `x` and `dy` again.
+
+`FusedDistMoeInputScaledRMSNorm` (`input_scaled_rmsnorm.py`) keeps the module,
+its parameters, and its checkpoint layout, and returns a callback backed by two
+Triton kernels: a one-row-per-program forward, and a persistent backward that
+accumulates the weight gradient in FP32 registers.
+`use_fused_dist_moe_post_expert_norm(model_config)` in
+`torchtitan_recipes.models.muse_spark` selects it for every routed-expert
+postprocess. Call it after Dist-MoE replaces the routed experts:
+
+```python
+config = muse_spark_816b_a42b_dist_moe_bf16_spmd_64_benchmark()
+use_fused_dist_moe_post_expert_norm(config.model)
+```
+
+The math is FP32 with one final rounding, as in the compiled region, but the
+reductions run in a different order: `y` and `dx` are within 2 BF16 ulps of the
+compiled region, and the weight gradient, reduced in another order, was closer
+to an FP64 reference than the compiled region's. Operands the kernels do not
+support (DTensor, non-contiguous, more than 16384 columns, no weight) run the
+module. At the production shape (131072 rows x 4096 columns, BF16) on one GPU,
+the forward took 231 us instead of 421 us, and the replay plus backward 872 us
+instead of 9581 us. A training profile shows about 1.1 ms of compiled-region
+backward kernels per call, so expect a smaller saving in training than this
+microbenchmark suggests; the end-to-end step time with it enabled has not been
+measured. No recipe enables it by default.
+
 ## TODO
 
 - Reject a DeepEP hidden size that is not a multiple of 256 at config time, in
