@@ -4,11 +4,16 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from dataclasses import replace
+from unittest.mock import patch
+
 import pytest
 import torch
+import torch_remat as remat
 
 from torchtitan.distributed.local_compile import LocalCompileConfig
 from torchtitan.models.muse_spark import build_model_config
+from torchtitan.models.muse_spark.model import MuseSparkTransformerBlock
 
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
@@ -95,6 +100,119 @@ def test_rmsnorm_region_matches_eager():
 
     for actual_tensor, expected_tensor in zip(actual, expected, strict=True):
         torch.testing.assert_close(actual_tensor, expected_tensor, atol=2e-2, rtol=2e-2)
+
+
+class _StubAttention(torch.nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.randn(dim) * 0.5)
+
+    def forward(self, x_TD, attention_metadata, positions=None):
+        return torch.tanh(x_TD) * self.scale
+
+
+class _StubFeedForward(torch.nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.randn(dim) * 0.5)
+
+    def forward(self, x_TD):
+        return torch.sin(x_TD) * self.scale + x_TD
+
+
+class _NormChainBlock(torch.nn.Module):
+    """``MuseSparkTransformerBlock.forward`` with real norms and residual gates
+    and cheap differentiable stand-ins for attention and the FFN."""
+
+    forward = MuseSparkTransformerBlock.forward
+
+    def __init__(self, layer: MuseSparkTransformerBlock.Config):
+        super().__init__()
+        dim = layer.attention_norm.normalized_shape
+        self.attention = _StubAttention(dim)
+        self.attention_norm = layer.attention_norm.build()
+        self.post_attention_norm = layer.post_attention_norm.build()
+        self.attention_residual = layer.attention_residual.build()
+        self.ffn_norm = layer.ffn_norm.build()
+        self.post_ffn_norm = layer.post_ffn_norm.build()
+        self.ffn_residual = layer.ffn_residual.build()
+        self.feed_forward = _StubFeedForward(dim)
+        self.branch_dtype = layer.branch_dtype
+
+
+def test_fused_pre_norm_cast_is_bitwise():
+    """``output_dtype=branch_dtype`` on the pre-norms only moves the cast into
+    the compiled region: the block output and every gradient are unchanged."""
+    torch.manual_seed(0)
+    # A production 816B layer, at the per-rank shape of the 64-GPU recipe:
+    # 16384 tokens of the fp32 residual stream, bf16 parameters (FSDP param_dtype).
+    layer = build_model_config("816B-A42B").layers[10]
+    fused_layer = replace(
+        layer,
+        attention_norm=replace(
+            layer.attention_norm, output_dtype=layer.branch_dtype
+        ),
+        ffn_norm=replace(layer.ffn_norm, output_dtype=layer.branch_dtype),
+    )
+    block = _NormChainBlock(layer)
+    for name, param in block.named_parameters():
+        with torch.no_grad():
+            if name.endswith("residual.gate"):
+                # Near the flavor's layer-10 init, 0.3 * logit(1 / 22).
+                param.copy_(-0.9 + 0.2 * torch.randn_like(param))
+            elif name.endswith("norm.weight"):
+                torch.nn.init.normal_(param, std=0.05)
+    block = block.to(device="cuda", dtype=torch.bfloat16)
+    fused_block = _NormChainBlock(fused_layer)
+    fused_block = fused_block.to(device="cuda", dtype=torch.bfloat16)
+    fused_block.load_state_dict(block.state_dict())
+    assert fused_block.attention_norm.output_dtype == torch.bfloat16
+    assert block.attention_norm.output_dtype is None
+
+    dim = layer.attention_norm.normalized_shape
+    stream_TD = 2.0 * torch.randn(16384, dim, device="cuda")
+    grad_output_TD = torch.randn_like(stream_TD)
+
+    def output_and_grads(module):
+        module.zero_grad(set_to_none=True)
+        x = stream_TD.clone().requires_grad_()
+        # No remat region here; the block's annotations are only for torch_remat.
+        with patch.object(remat, "recompute_needs_tensor"):
+            output_TD = module(x, None)
+        output_TD.backward(grad_output_TD)
+        return {
+            "output": output_TD.detach(),
+            "grad x": x.grad,
+            **{name: param.grad for name, param in module.named_parameters()},
+        }
+
+    try:
+        # A fresh cache, so earlier tests cannot exhaust the regions' recompile limits.
+        torch._dynamo.reset()
+        LocalCompileConfig(
+            regions=[
+                "muse_spark_rmsnorm",
+                "muse_spark_input_scaled_rmsnorm",
+                "muse_spark_residual",
+            ]
+        ).apply()
+        expected = output_and_grads(block)
+        actual = output_and_grads(fused_block)
+        # The fused pre-norms do round inside the region, so the match is not vacuous.
+        with torch.no_grad():
+            assert fused_block.ffn_norm(stream_TD).dtype == torch.bfloat16
+    finally:
+        LocalCompileConfig().apply()
+
+    assert expected.keys() == actual.keys()
+    for name, expected_tensor in expected.items():
+        torch.testing.assert_close(
+            actual[name],
+            expected_tensor,
+            atol=0,
+            rtol=0,
+            msg=lambda message, name=name: f"{name}: {message}",
+        )
 
 
 # The input-scaled norm also runs on routed tokens, a different count per layer.
