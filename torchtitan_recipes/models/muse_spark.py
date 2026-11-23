@@ -813,6 +813,11 @@ def _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(
         scratch_capacity_factor=1.0,
     )
     config.loss = replace(cast(ChunkedLossWrapper.Config, config.loss), num_chunks=16)
+    # Every offloaded tensor has the same size each step, and 29,184 tokens
+    # would round up to 32,768 in power-of-two pinned buffers.
+    config.activation_remat = replace(
+        config.activation_remat, offload_buffer_capacity="exact"
+    )
     if not fake_backend:
         config.dataloader = replace(
             config.dataloader,

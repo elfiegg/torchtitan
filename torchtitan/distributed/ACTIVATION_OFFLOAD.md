@@ -316,10 +316,15 @@ allocator never reuses a block allocated during capture, so every captured
 microbatch would hold fresh pinned memory for the life of the process. Each
 offloader keeps its own pool (`_PinnedBufferPool`):
 
-1. An offload takes a free buffer of the storage's size rounded up to a power
-   of two, or allocates one. The caching host allocator rounds to that size
-   anyway, and rounding lets storages whose size changes every step (the
-   tokens routed to an EP rank) share buffers.
+1. An offload takes a free buffer of the storage's capacity, or allocates one.
+   By default (`offload_buffer_capacity="power_of_two"`) the capacity is the
+   size rounded up to a power of two: the caching host allocator rounds to
+   that size anyway, and rounding lets storages whose size changes every step
+   (the tokens routed to an EP rank) share buffers. When every offloaded size
+   is fixed, `"exact"` keys buffers by their exact size instead, e.g. a
+   29,184-token microbatch saves the 12% that rounding to 32,768 tokens costs.
+   Launch it with `PYTORCH_ALLOC_CONF=pinned_max_round_threshold_mb:1`, so the
+   caching host allocator does not round the buffers up itself.
 2. When a reload's H2D copy is queued, its buffer returns with the copy's
    `reload_event`.
 3. The next offload into it makes the offload stream wait on that event, so
@@ -327,8 +332,9 @@ offloader keeps its own pool (`_PinnedBufferPool`):
 
 **Size.** The pool grows to the most bytes offloaded and not yet reloaded at
 once: one microbatch's worth per rank with gradient accumulation, times the
-microbatches in flight under PP, times the rounding (none for power-of-two
-sizes, e.g. a bf16 32K x 8192 block input is 512 MiB; under 2x in general).
+microbatches in flight under PP, times the rounding (none for exact capacity
+or power-of-two sizes, e.g. a bf16 32K x 8192 block input is 512 MiB; under 2x
+in general).
 Buffers live as long as the offloader.
 
 **Capture.** The hooks run once, during capture, and the copies, free points
