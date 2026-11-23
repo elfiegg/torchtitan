@@ -150,6 +150,9 @@ Pinned-host Adam moments work best with NUMA binding, for example
 
 Dist-MoE requires Blackwell GPUs and the optional
 `dist_moe` package. Dist-MoE owns dispatch, expert computation, and combine.
+A trainable post-expert norm runs as `dist_moe.InputScaledRMSNormPostprocess`,
+fused with the router-score weighting and top-k reduction; Dist-MoE calls the
+eager norm for shapes its kernels do not cover.
 
 On Hopper, where Dist-MoE is not available, HybridEP is the EP path that
 supports CUDA graphs. With capacity factor `1.0`, it uses about 2x the memory of
