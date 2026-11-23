@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from indexed_packed_replay import LANES, ORDINAL_PERIOD, ORIGINAL_CAPACITY, RankRows
+from torchtitan_recipes.models._muse_spark_indexed_replay import LANES, ORDINAL_PERIOD, ORIGINAL_CAPACITY, RankRows
 
 
 def verify_inputs(source_dir, plan_dir):

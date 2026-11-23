@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from gb300_config import fit_host_memory
-from indexed_packed_replay import (
+from torchtitan_recipes.models._muse_spark_indexed_replay import (
     IndexedPackedReplay,
     LANES,
     ORIGINAL_CAPACITY,

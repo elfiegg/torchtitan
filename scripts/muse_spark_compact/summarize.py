@@ -6,7 +6,7 @@ from math import isfinite
 from pathlib import Path
 from statistics import mean
 
-from indexed_packed_replay import LANES, ORIGINAL_CAPACITY
+from torchtitan_recipes.models._muse_spark_indexed_replay import LANES, ORIGINAL_CAPACITY
 
 
 WINDOW = slice(70, 90)
