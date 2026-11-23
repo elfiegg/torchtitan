@@ -148,6 +148,29 @@ projections in MXFP8. Inner attention and the LM head stay BF16.
 Pinned-host Adam moments work best with NUMA binding, for example
 `torchrun --numa-binding=node`.
 
+### Compact BF16 benchmark
+
+`muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark` uses a
+phase-preserving C4 replay with 29,184 slots per GPU, DP64/CP1/EP64,
+BF16 Adam moments on device, and a 49 GiB Dist-MoE activation slot. It runs
+100 updates from random initialization with forced round-robin routing.
+Use this configuration for throughput comparisons. Bring the staged replay
+source and placement plan and the Muse Spark tokenizer assets to each node.
+
+```bash
+export MUSE_REPACK_SOURCE=/shared/replay/indexed-source
+export MUSE_REPACK_PLAN=/shared/replay/indexed-phase-plan
+NCCL_NVLS_ENABLE=1 PYTORCH_ALLOC_CONF=pinned_max_round_threshold_mb:1 \
+  torchrun --nnodes=16 --nproc-per-node=4 --node-rank=NODE_RANK \
+  --master-addr=MASTER_ADDR --master-port=MASTER_PORT -m torchtitan.train \
+  --module torchtitan_recipes.models.muse_spark \
+  --config muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark
+```
+
+Each source and plan directory contains a manifest and its own NumPy arrays.
+Stage the same input on each rank. See the 64-GPU benchmark recipe docstring
+for dependency and NCCL teardown considerations.
+
 Dist-MoE requires Blackwell GPUs and the optional
 `dist_moe` package. Dist-MoE owns dispatch, expert computation, and combine.
 

@@ -87,6 +87,13 @@ from torchtitan.models.muse_spark.renderer import MuseSparkRendererConfig
 from torchtitan.models.muse_spark.tokenizer import MuseSparkTokenizer
 from torchtitan.observability.metrics import MetricsProcessor
 from torchtitan.trainer import Trainer
+from torchtitan_recipes.models._muse_spark_indexed_replay import (
+    COMPACT_CAPACITY,
+    IndexedPackedReplay,
+    LANES,
+    REPLAY_UPDATES,
+    SOURCE_SEGMENTS_PER_ROW,
+)
 
 
 _TRAINING_LR = 5e-5
@@ -674,19 +681,40 @@ def _muse_spark_816b_dist_moe_spmd_64_benchmark(
         expert_precision=expert_precision,
         context_parallel_degree=2,
     )
-    # The fake recipe already forces routing.
-    if not fake_backend:
-        _use_forced_balanced_routing(cast(MuseSparkModel.Config, config.model))
     # Forced routing balances the EP load, so 2x scratch is enough.
     config.dist_moe_runtime = replace(
         config.dist_moe_runtime,
         activation_slot_capacity_factor=0.0,
         scratch_capacity_factor=2.0,
     )
+    _configure_muse_spark_64_benchmark(
+        config,
+        fake_backend=fake_backend,
+        save_moe_projections=expert_precision == "mxfp8",
+    )
+    if not fake_backend:
+        config.dataloader = replace(
+            config.dataloader,
+            dataset=ConcatThenSplitPackingConfig(dataset=DATASETS["c4_test"]),
+            shuffle=False,
+        )
+        config.training.steps = 100
+    return config
+
+
+def _configure_muse_spark_64_benchmark(
+    config: Trainer.Config,
+    *,
+    fake_backend: bool,
+    save_moe_projections: bool,
+) -> None:
+    # The fake recipe already forces routing.
+    if not fake_backend:
+        _use_forced_balanced_routing(cast(MuseSparkModel.Config, config.model))
     # The fastest policies we measured: save and offload the attention
-    # regions, and with MXFP8 also the MoE projections.
+    # regions and optionally the MoE projections.
     offload_regions = ["attention.*"]
-    if expert_precision == "mxfp8":
+    if save_moe_projections:
         offload_regions += _MUSE_SPARK_MOE_PROJECTION_REGIONS
     # Keep the last block on GPU: only the loss runs between its forward and
     # its backward, so its copies could not overlap compute.
@@ -712,18 +740,10 @@ def _muse_spark_816b_dist_moe_spmd_64_benchmark(
     ]
     config.optim.enable_accelerator_graph = True
     config.debug.seed = 42
-    if fake_backend:
+    if not fake_backend:
         # FakePG has no NCCL communicator for symmetric memory.
-        return config
-    config.parallelism.fsdp_symm_mem_scope = "all"
-    config.checkpointer = None
-    config.dataloader = replace(
-        config.dataloader,
-        dataset=ConcatThenSplitPackingConfig(dataset=DATASETS["c4_test"]),
-        shuffle=False,
-    )
-    config.training.steps = 100
-    return config
+        config.parallelism.fsdp_symm_mem_scope = "all"
+        config.checkpointer = None
 
 
 def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_benchmark() -> Trainer.Config:
@@ -731,6 +751,79 @@ def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_benchmark() -> Trainer.Config:
     return _muse_spark_816b_dist_moe_spmd_64_benchmark(
         fake_backend=False, expert_precision="bf16"
     )
+
+
+def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark(
+    *,
+    source_dir: str | None = None,
+    plan_dir: str | None = None,
+    slot_gib: int = 49,
+    save_moe_projections: bool = True,
+) -> Trainer.Config:
+    """Replay the indexed C4 benchmark at 29,184 slots on DP64/CP1/EP64.
+
+    Set MUSE_REPACK_SOURCE and MUSE_REPACK_PLAN to the staged source and plan
+    directories for CLI use. This benchmark uses forced round-robin routing.
+    """
+    if os.environ.get("WORLD_SIZE", str(LANES)) != str(LANES):
+        raise ValueError(f"The compact Muse Spark replay requires {LANES} ranks")
+    if source_dir is None:
+        source_dir = os.environ.get("MUSE_REPACK_SOURCE")
+    if plan_dir is None:
+        plan_dir = os.environ.get("MUSE_REPACK_PLAN")
+    if not source_dir or not plan_dir:
+        raise ValueError(
+            "Set MUSE_REPACK_SOURCE and MUSE_REPACK_PLAN to run the compact benchmark"
+        )
+    if slot_gib <= 0:
+        raise ValueError("The Dist-MoE activation slot must be positive")
+    replay = IndexedPackedReplay(source_dir=source_dir, plan_dir=plan_dir)
+    replay.validate_compact_plan()
+
+    config = _muse_spark_816b_dist_moe_spmd(
+        seq_len=COMPACT_CAPACITY,
+        global_batch_size=LANES,
+        data_parallel_shard_degree=LANES,
+        tensor_parallel_degree=1,
+        context_parallel_degree=1,
+        expert_parallel_degree=LANES,
+        fake_backend=False,
+        attn_backend="varlen",
+        max_num_documents=SOURCE_SEGMENTS_PER_ROW,
+        expert_precision="bf16",
+    )
+    for _, attention, _, _ in config.model.traverse(VarlenInnerAttention.Config):
+        attention.sdpa_backends = ["FLASH_ATTENTION"]
+    _configure_muse_spark_64_benchmark(
+        config, fake_backend=False, save_moe_projections=save_moe_projections
+    )
+    config.parallelism = replace(config.parallelism, fsdp_reshard_after_forward="default")
+    config.training.steps = REPLAY_UPDATES
+    config.dataloader = replace(
+        config.dataloader,
+        dataset=replay,
+        per_sample_pad_multiple=1,
+        shuffle=False,
+        repeat=True,
+    )
+    config.precision = replace(
+        config.precision,
+        dtype="float32",
+        param_dtype="bfloat16",
+        reduce_dtype="bfloat16",
+    )
+    config.optim.optimizer.optimizers = [
+        replace(cast(AdamW.Config, optimizer), moment_dtype="bfloat16", fused=True)
+        for optimizer in config.optim.optimizer.optimizers
+    ]
+    config.loss = replace(cast(ChunkedLossWrapper.Config, config.loss), num_chunks=16)
+    config.dist_moe_runtime = replace(
+        config.dist_moe_runtime,
+        scratch_capacity_factor=1.0,
+        activation_slot_capacity_factor=None,
+        activation_slot_bytes=slot_gib * 2**30,
+    )
+    return replace(config)
 
 
 def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_benchmark_fake() -> Trainer.Config:
