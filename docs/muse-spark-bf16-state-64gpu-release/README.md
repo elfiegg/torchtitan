@@ -4,48 +4,84 @@
 
 This release measures TorchTitan training throughput for Muse Spark Open
 816B-A42B on 64 {{HARDWARE}} GPUs with everything in BF16: compute, master
-weights, gradients, Adam moments and FSDP reductions. Dropping the FP32 master
-copy frees device memory, which goes to a 112 GiB Dist-MoE activation slot so
-that fewer MoE layers recompute in backward.
+weights, gradients, Adam moments and FSDP reductions. A 112 GiB Dist-MoE
+activation slot keeps more MoE activations on the GPU, so fewer MoE layers
+recompute in backward.
 
 It is a performance benchmark, not a training recipe. Routing is forced to a
-balanced round-robin assignment, weights are randomly initialized, and BF16
-master weights train to a visibly higher loss than the FP32-master recipe
-(see [Numerics](#numerics)).
+balanced round-robin assignment and weights are randomly initialized.
 
 ## Results
 
-All 64 ranks completed 100 updates with finite loss and gradient norm. Step
-time is the arithmetic mean of the per-step logged values over updates 71..90
-(20 updates). The reference runs the same workload, parallelism and hardware
-with FP32 master weights, gradients and Adam state (BF16 compute).
+### Throughput and memory
 
-| Configuration | Step s | Throughput vs reference | Peak reserved GiB | Peak device used GiB |
-|---|---:|---:|---:|---:|
-| BF16 state, 112 GiB Dist-MoE slot | 5.000 | +4.3% | 250.83 | 266.01 |
-| Reference: FP32 master weights, gradients and Adam state | 5.215 | 0.0% | 242.99 | -- |
+TPS is tokens/s/GPU. Each update processes 64 rows of 32,768 token slots, and
+TPS counts all slots, including padding. Global TPS is TPS/GPU x 64. TFLOPs/GPU
+is TorchTitan's analytical model-FLOP estimate; MFU is not reported. The
+baseline is the 64-GPU recipe `muse_spark_816b_a42b_dist_moe_bf16_spmd_64`
+with the same forced routing; [What changed](#what-changed-from-the-baseline)
+lists the differences.
 
-- **Throughput:** each update processes 2,097,152 token slots, so throughput
-  scales with the inverse step time; padding slots are counted.
-- **Memory:** peak reserved is the PyTorch allocator high-water on rank 0 over
-  all 100 updates. Peak device used is the highest device-wide memory sampled
-  every 200 ms across all ranks, so it includes memory outside the allocator.
-  About 12.5 GiB of device memory stayed free.
+| Configuration | TPS/GPU | Global TPS | vs baseline | TFLOPs/GPU | Peak active GiB | Peak reserved GiB | Peak device used GiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| BF16 state, DP32 x CP2 | 6,554.21 | 419,469 | +50.63% | 2,145.94 | 241.00 | 250.83 | 266.01 |
+| Baseline, DP8 x CP8 | 4,351.26 | 278,481 | -- | 1,424.67 | 209.38 | 257.61 | 266.42 |
 
-Each value comes from a single run; differences are observed values, not
-confidence intervals.
+Key observations:
+
+- **Throughput:** BF16 state is 50.6% faster than the baseline: 5.000 s
+  instead of 7.531 s per update.
+- **Memory:** both peak within 0.5 GiB of each other in device memory, with
+  about 12 GiB of device memory free.
+
+The two runs were measured differently:
+
+| | BF16 state | Baseline |
+|---|---|---|
+| Measured updates | 71..90 of 100 | 13..22 of 22 |
+| TPS | Mean of the per-update logged values on rank 0 | Longest synchronized rank-local window, divided by 10 updates |
+| Peak active / reserved | PyTorch allocator high-water on rank 0 | Maximum over all 64 GPUs |
+| Peak device used | Sampled every 200 ms on all GPUs | Sampled every 100 ms on all GPUs |
+
+Allocation retries and OOM counters stayed zero in the BF16-state run. Each
+configuration was run once; differences are observed values, not confidence
+intervals.
+
+<details>
+<summary>Per-update TPS distribution, BF16 state</summary>
+
+| Mean TPS/GPU | Median | Min..max | Global TPS | Mean step s |
+|---:|---:|---:|---:|---:|
+| 6,554.21 | 6,554.58 | 6,512.03..6,608.31 | 419,469 | 4.9996 |
+
+Updates 71..90, rank 0.
+
+</details>
+
+### What changed from the baseline
+
+| Area | Baseline | BF16 state |
+|---|---|---|
+| Parallelism | FSDP 8 x CP 8 x EP 64; 8 microbatches per DP rank | FSDP 32 x CP 2 x EP 64; 2 microbatches per DP rank |
+| Attention CP | K/V all-gather | K/V all-gather, with selective K/V gather in the sliding-window layers |
+| Saved activations | Attention and MoE projection regions kept on the GPU | Attention regions and block inputs offloaded to pinned host memory, except in the last block |
+| Dist-MoE | About 17 GiB activation slot (capacity factor 0.25) | 112 GiB activation slot |
+| Weights and optimizer state | FP32 master weights, gradients and Adam moments; FP32 reductions | All BF16 |
+| FSDP | NCCL collectives | Symmetric-memory collectives |
+| Tokenizer | Test tokenizer | Muse Spark Open tokenizer |
+
+Both use the same model, 32K sequences, global batch 64, `c4_test`, seed 42,
+forced round-robin routing, Dist-MoE scratch factor 1 and GPU-resident Adam
+moments.
 
 ### Numerics
 
-| Configuration | Loss, update 1 | Loss, update 100 | Mean loss, updates 71..90 |
-|---|---:|---:|---:|
-| BF16 state | 12.2302 | 7.6649 | 7.7060 |
-| FP32-master reference | 12.2302 | 6.9234 | 7.1077 |
+| Loss, update 1 | Loss, update 100 | Mean loss, updates 71..90 |
+|---:|---:|---:|
+| 12.2302 | 7.6649 | 7.7060 |
 
-Both runs start from the same seed and data, so update 1 matches. The loss
-separates within 100 updates and is 0.74 higher at update 100, most likely
-because BF16 master weights round away small Adam updates. This configuration
-is for throughput only; it is not loss parity with the FP32-master recipe.
+All 64 ranks completed 100 updates with finite loss and gradient norm. The
+baseline used a different tokenizer, so its losses are not comparable.
 
 ## Workload
 
