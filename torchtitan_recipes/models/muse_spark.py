@@ -809,6 +809,21 @@ def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark(
     _configure_muse_spark_64_benchmark(
         config, fake_backend=False, save_moe_projections=save_moe_projections
     )
+    # Fixed per-token byte counts in the compact 816B replay.
+    config.activation_remat = replace(
+        config.activation_remat,
+        offload_exact_buffer_sizes=tuple(
+            COMPACT_CAPACITY * bytes_per_token
+            for bytes_per_token in (
+                8_192 * 4,  # FP32 block input
+                (8_192 + 2 * 16 * 64) * 2,  # BF16 QKV output
+                8_192 * 2,  # BF16 attention output and MoE unpooler
+                128 * 4,  # FP32 attention LSE
+                256 * 4,  # FP32 router logits
+                4_096 * 2,  # BF16 MoE pooler
+            )
+        ),
+    )
     config.parallelism = replace(
         config.parallelism, fsdp_reshard_after_forward="default"
     )

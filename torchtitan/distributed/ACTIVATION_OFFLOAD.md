@@ -29,6 +29,7 @@ GPU or sent to CPU, in `ActivationRematConfig`:
 |---|---|---|
 | `offload_block_input` | `False` | each block's input hidden state (`CHECKPOINT_INPUT` that requires grad); under full remat, the whole stash |
 | `offload_regions` | `[]` | glob patterns over retained save-region names, e.g. `["attention.*"]`; `["*"]` is everything save regions retain |
+| `offload_exact_buffer_sizes` | `()` | requests of these byte sizes use exact pinned buffer pools. Other sizes use power-of-two pools. Configure the pinned allocator to leave the selected sizes unrounded. |
 
 Both can differ per block through `block_overrides`
 ([ACTIVATION_REMAT.md](ACTIVATION_REMAT.md#per-block-policies)), e.g. to

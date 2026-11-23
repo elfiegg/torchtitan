@@ -250,13 +250,16 @@ class _PinnedBufferPool:
     step (e.g. expert inputs under EP) share buffers instead of growing the
     pool every step. The caching host allocator rounds pinned allocations up
     to a power of two by default, so this usually costs no extra memory.
+    Fixed-shape requests can opt into exact buckets when the host allocator is
+    configured to leave those sizes unrounded.
     """
 
     # TODO: enforce the graph boundary invariant above. Count captures with
     # torch.cuda.graphs.register_graph_capture_start_hook, record at acquire
     # whether a capture is running and which one, and raise at release when a
     # buffer acquired during a capture is released outside it.
-    def __init__(self) -> None:
+    def __init__(self, exact_sizes: tuple[int, ...] = ()) -> None:
+        self._exact_sizes = frozenset(exact_sizes)
         # capacity -> free buffers of that capacity, oldest release first:
         # (buffer, event of its last read, recorded during capture).
         self._free: dict[
@@ -268,7 +271,11 @@ class _PinnedBufferPool:
         once it is current."""
         # The smallest power of two >= nbytes; requesting exactly that makes
         # the caching host allocator's own rounding a no-op.
-        capacity = 1 << max(nbytes - 1, 0).bit_length()
+        capacity = (
+            nbytes
+            if nbytes in self._exact_sizes
+            else 1 << max(nbytes - 1, 0).bit_length()
+        )
         free = self._free.get(capacity)
         if not free:
             return torch.empty(capacity, dtype=torch.uint8, pin_memory=True)[:nbytes]
@@ -321,7 +328,7 @@ class ActivationOffloader:
         # the all-gather overlaps the reload instead of following both.
         self._offload_stream = torch.cuda.Stream()
         self._reload_stream = torch.cuda.Stream()
-        self._host_buffers = _PinnedBufferPool()
+        self._host_buffers = _PinnedBufferPool(remat_config.offload_exact_buffer_sizes)
         # The group whose block forward is running, and its saved-tensor
         # hooks: the block's pre-hook enters them and its post-hook exits
         # them, so they cannot be one ``with`` statement.

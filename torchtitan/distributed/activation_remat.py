@@ -151,6 +151,14 @@ class ActivationRematConfig:
     on GPU stays there, since offloading it would free nothing.
     """
 
+    offload_exact_buffer_sizes: tuple[int, ...] = ()
+    """Byte sizes of fixed-shape offload buffers to pool at exact capacity.
+
+    Other requests use power-of-two pools to share storage across nearby
+    sizes. Configure the PyTorch pinned allocator to avoid rounding the
+    selected sizes as well.
+    """
+
     block_overrides: list[BlockRematOverride] = field(default_factory=list)
     """
     Per-block changes to the fields above, e.g. recomputing an expensive
@@ -174,6 +182,13 @@ class ActivationRematConfig:
     """Not supported by torch_remat; must remain false."""
 
     def __post_init__(self) -> None:
+        if any(
+            type(size) is not int or size <= 0
+            for size in self.offload_exact_buffer_sizes
+        ):
+            raise ValueError(
+                "offload_exact_buffer_sizes must contain positive byte counts"
+            )
         if self.preserve_rng_state:
             raise ValueError(
                 "torch_remat activation checkpointing does not support "
