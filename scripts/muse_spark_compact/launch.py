@@ -90,6 +90,7 @@ try:
     if torch.version.git_version != "daf1a40a5de981f7cab47fed4dd9883b1581cd63":
         raise RuntimeError("Expected the pinned benchmark PyTorch build")
     import norm_fusion  # noqa: F401  # Installs the scoped compile-region change.
+    import swiglu_recompute  # noqa: F401  # Installs BF16 replay fusion.
     from torchtitan.train import main
 
     main()
