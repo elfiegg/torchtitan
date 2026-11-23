@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 import torch_remat as remat
 from torch import nn
+from torch.distributed.tensor import DTensor
 
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.distributed.local_compile import local_compile, LocalCompileConfig
@@ -327,7 +328,11 @@ class MuseSparkRMSNorm(RMSNorm):
 class MuseSparkRMSNormWithInputScale(MuseSparkRMSNorm):
     @dataclass(kw_only=True, slots=True)
     class Config(MuseSparkRMSNorm.Config):
-        pass
+        fuse_dist_moe_postprocess: bool = False
+
+    def __init__(self, config: Config) -> None:
+        super().__init__(config)
+        self.fuse_dist_moe_postprocess = config.fuse_dist_moe_postprocess
 
     @local_compile("muse_spark_input_scaled_rmsnorm", batch_invariant=False)
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -341,8 +346,29 @@ class MuseSparkRMSNormWithInputScale(MuseSparkRMSNorm):
     def to_dist_moe_postprocess(
         self,
     ) -> Callable[[torch.Tensor], torch.Tensor]:
-        """Return the learned RMSNorm as an eager Dist-MoE callback."""
-        return self
+        """Bind the learned RMSNorm to the requested Dist-MoE postprocess."""
+        if (
+            not self.fuse_dist_moe_postprocess
+            or self.weight is None
+            or not self.weight.requires_grad
+        ):
+            return self
+
+        from dist_moe import InputScaledRMSNormPostprocess
+
+        return InputScaledRMSNormPostprocess(
+            weight_getter=self._dist_moe_local_weight,
+            eps=self.eps,
+            gain_center=self.gain_center,
+            fallback=self,
+        )
+
+    def _dist_moe_local_weight(self) -> torch.Tensor:
+        """Read the current local gain while FSDP has materialized it."""
+        weight = self.weight
+        if weight is None:
+            raise ValueError("Dist-MoE input-scaled RMSNorm requires a learned gain")
+        return weight.to_local() if isinstance(weight, DTensor) else weight
 
 
 class MuseSparkNormPreservingResidualConnection(Module):

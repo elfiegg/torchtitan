@@ -161,6 +161,7 @@ def test_compact_bf16_benchmark_config_loader(tmp_path, monkeypatch):
     assert all(
         isinstance(layer.feed_forward.router, RoundRobinTokenChoiceTopKRouter.Config)
         and isinstance(layer.feed_forward.routed_experts, DistMoeRoutedExperts.Config)
+        and layer.feed_forward.routed_experts.output_postprocess.fuse_dist_moe_postprocess
         for layer in config.model.layers
     )
     assert not config.override.imports

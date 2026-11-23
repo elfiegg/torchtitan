@@ -86,6 +86,7 @@ from torchtitan.models.muse_spark.model import (
     MuseSparkModel,
     MuseSparkMultimodalModel,
     MuseSparkRMSNorm,
+    MuseSparkRMSNormWithInputScale,
 )
 from torchtitan.models.muse_spark.renderer import MuseSparkRendererConfig
 from torchtitan.models.muse_spark.tokenizer import MuseSparkTokenizer
@@ -785,6 +786,8 @@ def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark(
     replay = IndexedPackedReplay(source_dir=source_dir, plan_dir=plan_dir)
     replay.validate_compact_plan()
 
+    from torchtitan.models.common.dist_moe import DistMoeRoutedExperts
+
     config = _muse_spark_816b_dist_moe_spmd(
         seq_len=COMPACT_CAPACITY,
         global_batch_size=LANES,
@@ -804,6 +807,10 @@ def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark(
             MuseSparkRMSNorm.Config, block.attention_norm
         ).output_dtype = block.branch_dtype
         cast(MuseSparkRMSNorm.Config, block.ffn_norm).output_dtype = block.branch_dtype
+    for _, experts, _, _ in config.model.traverse(DistMoeRoutedExperts.Config):
+        postprocess = experts.output_postprocess
+        if isinstance(postprocess, MuseSparkRMSNormWithInputScale.Config):
+            postprocess.fuse_dist_moe_postprocess = True
     for _, attention, _, _ in config.model.traverse(VarlenInnerAttention.Config):
         attention.sdpa_backends = ["FLASH_ATTENTION"]
     _configure_muse_spark_64_benchmark(
