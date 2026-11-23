@@ -95,6 +95,9 @@ try:
     import learned_route
 
     learned_route.install()
+    from exact_host_pool import install as install_host_pool
+
+    install_host_pool()
 
     from torchtitan.train import main
 
