@@ -13,13 +13,13 @@ WIDTH = 4_096
 TOPK = 8
 RANKS = 64
 H3_BYTES = TOKENS * WIDTH * TOPK * 2
-SLOT_BYTES = 49 * 2**30
+SLOT_BYTES = frozenset((45 * 2**30, 49 * 2**30))
 
 
 def stage_spans(slot_bytes, slots, scratch_bytes):
-    if (slot_bytes, slots, scratch_bytes) != (SLOT_BYTES, 1, 6 * H3_BYTES):
+    if slot_bytes not in SLOT_BYTES or (slots, scratch_bytes) != (1, 6 * H3_BYTES):
         raise ValueError("Host H3 was validated for the fixed one-slot compact BF16 planner")
-    return [(SLOT_BYTES + i * H3_BYTES, H3_BYTES) for i in range(2)]
+    return [(slot_bytes + i * H3_BYTES, H3_BYTES) for i in range(2)]
 
 
 class TorchCopyIO:

@@ -7,6 +7,7 @@ from math import isfinite
 import os
 from pathlib import Path
 
+from gb300_config import fit_host_memory
 from indexed_packed_replay import (
     IndexedPackedReplay,
     LANES,
@@ -196,6 +197,8 @@ def mxfp8_repacked():
     config = build_repacked_config(
         source_dir, plan_dir, slot_gib=slot_gib, scratch_factor=scratch_factor,
     )
+    if os.environ.get("MUSE_PLATFORM") == "gb300":
+        config = fit_host_memory(config)
     if os.environ.get("RANK") == "0" and (output_dir := os.environ.get("REPRO_OUTPUT")):
         fields = {
             "variant": os.environ.get("VARIANT", "compact-mxfp8"),

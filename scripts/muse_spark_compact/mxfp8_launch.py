@@ -13,6 +13,7 @@ from torchtitan.trainer import Trainer
 
 import audit
 import planner_audit
+from host_allocation_receipt import snapshot
 
 
 RANK = int(os.environ["RANK"])
@@ -27,6 +28,7 @@ class Recorder:
     def __init__(self):
         self.file = METRICS.open("w")
         self.steps = []
+        self.host_samples = {}
 
     def log(self, metrics, step):
         audit.check(step)
@@ -38,6 +40,8 @@ class Recorder:
         metrics["memory/device_used_at_log(GiB)"] = (total - free) / 2**30
         self.file.write(json.dumps({"rank": RANK, "step": step, **metrics}) + "\n")
         self.steps.append(step)
+        if os.environ["MUSE_PLATFORM"] == "gb300" and step in (1, 3, STEPS):
+            self.host_samples[step] = snapshot(torch)
 
     def close(self):
         self.file.close()
@@ -69,6 +73,8 @@ def close(self):
         return
     if steps != STEPS or recorder is None or recorder.steps != list(range(1, STEPS + 1)):
         raise RuntimeError(f"Incomplete MXFP8 benchmark on rank {RANK} at update {steps}")
+    if recorder.host_samples:
+        (OUTPUT / f"gb300-host-rank{RANK}.json").write_text(json.dumps(recorder.host_samples))
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
     result = {
         "rank": RANK, "completed_steps": steps, "metric_rows": len(recorder.steps),

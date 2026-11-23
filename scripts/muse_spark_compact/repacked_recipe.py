@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from h3_campaign import host_h3_fields
+from gb300_config import fit_host_memory
 from indexed_packed_replay import (
     IndexedPackedReplay,
     LANES,
@@ -146,6 +147,8 @@ def bf16_repacked():
         slot_gib=int(os.environ.get("MUSE_SLOT_GIB", "49")),
         save_projections=os.environ.get("MUSE_SAVE_PROJ", "1") == "1",
     )
+    if os.environ.get("MUSE_PLATFORM") == "gb300":
+        config = fit_host_memory(config)
     if os.environ.get("RANK") == "0" and (output_dir := os.environ.get("REPRO_OUTPUT")):
         fields = {
             "variant": os.environ.get("VARIANT", "phase-preserving-repack"),

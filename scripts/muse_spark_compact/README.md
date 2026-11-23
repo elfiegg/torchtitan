@@ -2,8 +2,8 @@
 
 This experiment replays the same 100 C4 updates as the 64-GPU, 32K CP2 benchmark
 at 29,184 physical slots per GPU. It uses DP64, EP64, CP1, TP1 and one
-microbatch per update with a 49 GiB Dist-MoE activation slot and 33 selected host H3 snapshots. It keeps document
-boundaries and the modulo-32 phase of forced balanced routing. Use this setup
+microbatch per update. The replay preserves document boundaries and the
+modulo-32 phase of forced balanced routing. Use this setup
 for throughput comparisons. Forced routing is unsuitable for training quality
 measurements.
 
@@ -39,11 +39,11 @@ zero-based rank and one common rendezvous endpoint. The script sets
 Use an allocation in one NVLink domain.
 
 ```bash
-scripts/muse_spark_compact/run_node.sh bf16 NODE_RANK MASTER_ADDR MASTER_PORT
+scripts/muse_spark_compact/run_node.sh rubin bf16 NODE_RANK MASTER_ADDR MASTER_PORT
 ```
 
 After training, verify all 64 completion and dtype receipts and summarize
-updates 71 at 90 inclusive.
+updates 71 through 90.
 
 ```bash
 python3 scripts/muse_spark_compact/summarize.py "$REPRO_OUTPUT"
@@ -54,5 +54,21 @@ mean of `32,768 / update_seconds`. Native tokens/s/GPU and model TFLOPS/GPU
 are the means of TorchTitan's logged metrics. The TFLOPS estimate uses the
 physical workload represented by the compact recipe.
 
-Use `mxfp8` to run the compact native staged MXFP8 recipe with a 42 GiB
-expert slot. FlashAttention and the language-model head stay in BF16.
+Use `rubin mxfp8` to run native staged MXFP8 experts and projections with a
+42 GiB expert slot. FlashAttention and the language-model head stay in BF16.
+
+## GB300 counterparts
+
+Use `gb300 bf16` or `gb300 mxfp8` in the same node command and use a
+separate shared output directory for each. Both GB300 presets remove unpooler
+outputs from the activation save and offload lists. The BF16 preset uses a
+45 GiB slot and snapshots H3 in eight layers. The MXFP8 preset keeps the 42 GiB
+native slot and applies exact-size host pooling. These presets target nodes
+with four GB300 GPUs each, and retain the 100-update replay.
+
+| Platform | Precision | Expert slot | Host H3 snapshots |
+| --- | --- | ---: | ---: |
+| Rubin | BF16 | 49 GiB | 33 |
+| Rubin | MXFP8 | 42 GiB | 0 |
+| GB300 | BF16 | 45 GiB | 8 |
+| GB300 | MXFP8 | 42 GiB | 0 |

@@ -9,8 +9,10 @@ import time
 
 CONTROL = "repacked29184route49full"
 CANDIDATE = "repacked29184routeh333full"
+GB300_CANDIDATE = "gb300-bf16-compact"
 SELECTED_LAYERS = (5, 6, 7, 10, 11, 14, 15, 17, 18, 20, 22, 24, 27, 28, 29, 31,
                    33, 34, 36, 38, 39, 41, 44, 45, 47, 49, 51, 52, 54, 55, 58, 59, 60)
+GB300_SELECTED_LAYERS = (5, 10, 17, 24, 31, 39, 49, 59)
 TOKENS = 29_184
 WIDTH = 4_096
 TOPK = 8
@@ -26,24 +28,28 @@ TORCHTITAN_OFFLOAD_SHA = "296fecd743925dbf33f5ab97516e5cd21a5efc47120bf61299e8da
 
 
 def host_h3_fields(variant):
-    if variant not in (CONTROL, CANDIDATE):
+    layers = {CONTROL: (), CANDIDATE: SELECTED_LAYERS, GB300_CANDIDATE: GB300_SELECTED_LAYERS}
+    if variant not in layers:
         raise ValueError(f"Unexpected compact H3 variant {variant!r}")
-    enabled = variant == CANDIDATE
+    selected_layers = layers[variant]
+    enabled = bool(selected_layers)
     return {
         "enabled": enabled,
         "exact_host_pool": enabled,
-        "selected_zero_based_layers": list(SELECTED_LAYERS) if enabled else [],
-        "warmup_replay_parity_layer": SELECTED_LAYERS[0] if enabled else None,
+        "selected_zero_based_layers": list(selected_layers),
+        "warmup_replay_parity_layer": selected_layers[0] if enabled else None,
     }
 
 
 def check_environment(env=os.environ):
-    fields = host_h3_fields(env["VARIANT"])
+    variant = env["VARIANT"]
+    fields = host_h3_fields(variant)
+    slot_gib = "45" if variant == GB300_CANDIDATE else "49"
     expected = {
         "WORLD_SIZE": str(RANKS), "LOCAL_WORLD_SIZE": "4", "REPRO_STOP_AFTER": str(STEPS),
         "EXP_NORM_FUSION": "cast", "EXP_SWIGLU_RECOMPUTE": "1", "EXP_LEARNED_ROUTE": "1",
         "EXP_SELECTIVE_HOST_H3": str(int(fields["enabled"])), "EXP_MOE_H3_OFFLOAD": "0",
-        "MUSE_CP": "1", "MUSE_TP": "1", "MUSE_EP": "64", "MUSE_SLOT_GIB": "49",
+        "MUSE_CP": "1", "MUSE_TP": "1", "MUSE_EP": "64", "MUSE_SLOT_GIB": slot_gib,
         "MUSE_LOSS_CHUNKS": "16", "MUSE_SAVE_PROJ": "1", "MUSE_PROFILE": "0",
         "MUSE_SEPARATE_RS": "0", "MUSE_UNSHARD_CURRENT": "0", "MUSE_EXPERT_PRESET": "",
         "NCCL_NVLS_ENABLE": "1", "PYTORCH_ALLOC_CONF": "pinned_max_round_threshold_mb:1",
@@ -69,13 +75,15 @@ def install(variant, torch):
         raise RuntimeError(f"Pinned CUDA PyTorch changed: {torch.__version__} {torch.version.git_version}")
     check_source(api, DIST_MOE_API_SHA)
     check_source(activation_offload, TORCHTITAN_OFFLOAD_SHA)
-    if not host_h3_fields(variant)["enabled"]:
+    fields = host_h3_fields(variant)
+    if not fields["enabled"]:
         return None
 
     from torch_h3_runtime import install_with_exact_host_pool
 
     return install_with_exact_host_pool(
-        api, torch, activation_offload, SELECTED_LAYERS, is_fake_symmetric_memory, validate_replay=True,
+        api, torch, activation_offload, fields["selected_zero_based_layers"],
+        is_fake_symmetric_memory, validate_replay=True,
     )
 
 
@@ -94,13 +102,13 @@ def collect_host_phase(torch, binder, phase, step, rank, local_rank):
     }
 
 
-def check_host_snapshots(samples, rank, enabled):
+def check_host_snapshots(samples, rank, fields):
     if [sample["phase"] for sample in samples] != list(HOST_PHASES):
         raise ValueError(f"Rank {rank} is missing an untimed host allocator phase")
     hosts = {sample["host"] for sample in samples}
     if len(hosts) != 1 or not next(iter(hosts)):
         raise ValueError(f"Rank {rank} host identity changed")
-    count = len(SELECTED_LAYERS) if enabled else 0
+    count = len(fields["selected_zero_based_layers"])
     for sample, step in zip(samples, (1, 3, STEPS), strict=True):
         if (sample["rank"], sample["local_rank"], sample["step"]) != (rank, rank % 4, step):
             raise ValueError(f"Rank {rank} host snapshot identity changed")
@@ -115,7 +123,7 @@ def check_host_snapshots(samples, rank, enabled):
             raise ValueError(f"Rank {rank} reported fewer pinned bytes than its H3 payload")
 
 
-def check_completion(receipt, rank, enabled):
+def check_completion(receipt, rank, fields):
     if receipt.get("torch_git_version") != TORCH_GIT:
         raise ValueError(f"Rank {rank} has unexpected PyTorch pin")
     route = receipt["learned_route"]
@@ -126,15 +134,16 @@ def check_completion(receipt, rank, enabled):
     if receipt.get("training_accelerator_graph") is not True:
         raise ValueError(f"Rank {rank} did not configure the training CUDA graph")
     h3 = receipt.get("host_h3")
-    if not enabled:
+    if not fields["enabled"]:
         if h3 is not None:
             raise ValueError(f"Control rank {rank} unexpectedly installed H3")
         return
+    selected_layers = fields["selected_zero_based_layers"]
     required = {
-        "layers": LAYERS, "selected_zero_based_layers": list(SELECTED_LAYERS),
-        "host_snapshots_per_schedule": len(SELECTED_LAYERS),
-        "prefetched_restores_per_training_schedule": len(SELECTED_LAYERS),
-        "snapshot_bytes": SNAPSHOT_BYTES, "reserved_host_bytes": len(SELECTED_LAYERS) * SNAPSHOT_BYTES,
+        "layers": LAYERS, "selected_zero_based_layers": selected_layers,
+        "host_snapshots_per_schedule": len(selected_layers),
+        "prefetched_restores_per_training_schedule": len(selected_layers),
+        "snapshot_bytes": SNAPSHOT_BYTES, "reserved_host_bytes": len(selected_layers) * SNAPSHOT_BYTES,
     }
     if h3 is None or any(h3.get(key) != value for key, value in required.items()):
         raise ValueError(f"Rank {rank} did not construct the complete selective H3 schedule")
@@ -142,6 +151,6 @@ def check_completion(receipt, rank, enabled):
         raise ValueError(f"Rank {rank} has no evidence of CUDA graph reuse")
     parity = h3["warmup_replay_parity"]
     routes = parity["valid_routes"]
-    if (parity["layer"] != SELECTED_LAYERS[0] or not 0 < routes <= TOKENS * TOPK
+    if (parity["layer"] != fields["warmup_replay_parity_layer"] or not 0 < routes <= TOKENS * TOPK
             or routes % TOPK or parity["matched_words"] != routes * WIDTH):
         raise ValueError(f"Rank {rank} is missing its bitwise valid-H3 warmup parity receipt")

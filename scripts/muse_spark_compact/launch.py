@@ -102,9 +102,9 @@ def close_and_exit(self):
     }
     if host_h3 is not None:
         receipt["host_h3"] = host_h3
-    enabled = h3_campaign.host_h3_fields(variant)["enabled"]
-    h3_campaign.check_host_snapshots(recorder.host_snapshots, rank, enabled)
-    h3_campaign.check_completion(receipt, rank, enabled)
+    fields = h3_campaign.host_h3_fields(variant)
+    h3_campaign.check_host_snapshots(recorder.host_snapshots, rank, fields)
+    h3_campaign.check_completion(receipt, rank, fields)
     (output / f'host-allocator-rank{rank}.json').write_text(json.dumps(recorder.host_snapshots, indent=2))
     (output / f'completion-rank{rank}.json').write_text(json.dumps(receipt, indent=2))
     sys.stdout.flush()
