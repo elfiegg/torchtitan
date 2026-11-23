@@ -33,6 +33,12 @@ GPU or sent to CPU, in `ActivationRematConfig`:
 Both can differ per block through `block_overrides`
 ([ACTIVATION_REMAT.md](ACTIVATION_REMAT.md#per-block-policies)), e.g. to
 offload only some blocks, or to keep some on GPU (below).
+`offload_buffer_capacity` sizes the pooled pinned buffers. The default
+`"power_of_two"` lets sizes that vary between steps (e.g. expert inputs under EP)
+share buffers; `"exact"` avoids the rounding when every offloaded size is fixed,
+e.g. a 29,184-token microbatch. Launch it with
+`PYTORCH_ALLOC_CONF=pinned_max_round_threshold_mb:1` so the caching host
+allocator does not round the buffers up instead.
 Offloading in place of recomputing is `save_regions=["*"]` plus offload: only
 the cheap code outside regions is recomputed. Tensors recomputation needs but
 no region retains (`recompute_needs_tensor`) stay on GPU; the first-forward
