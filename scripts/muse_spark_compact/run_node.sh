@@ -45,6 +45,7 @@ export NCCL_NVLS_ENABLE=1 PYTORCH_ALLOC_CONF=pinned_max_round_threshold_mb:1
 export OMP_NUM_THREADS=8
 unset NCCL_LAUNCH_ORDER_IMPLICIT
 export MUSE_SLOT_GIB=49
+export EXP_NORM_FUSION=cast
 
 "${PYTHON:-python3}" -m torch.distributed.run \
   --nnodes=16 --nproc-per-node=4 --node-rank="$node_rank" \
