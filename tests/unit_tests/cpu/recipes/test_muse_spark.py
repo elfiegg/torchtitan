@@ -11,6 +11,7 @@ from types import ModuleType
 from unittest.mock import patch
 
 import pytest
+import torch
 from torchtitan.config import ConfigLoader
 from torchtitan.models.common.attention.cp_attention import (
     UlyssesSlidingWindowVarlenInnerAttention,
@@ -163,6 +164,12 @@ def test_compact_bf16_benchmark_config_loader(tmp_path, monkeypatch):
         for layer in config.model.layers
     )
     assert not config.override.imports
+    assert all(
+        layer.attention_norm.output_dtype
+        == layer.ffn_norm.output_dtype
+        == torch.bfloat16
+        for layer in config.model.layers
+    )
 
 
 @pytest.mark.parametrize("recipe", [muse_spark_debugmodel, muse_spark_debugmodel_mm])

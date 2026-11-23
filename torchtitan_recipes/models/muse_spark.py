@@ -82,11 +82,16 @@ from torchtitan.models.common.moe import (
 )
 
 from torchtitan.models.muse_spark import build_model_config, MUSE_SPARK_SPECIAL_TOKENS
-from torchtitan.models.muse_spark.model import MuseSparkModel, MuseSparkMultimodalModel
+from torchtitan.models.muse_spark.model import (
+    MuseSparkModel,
+    MuseSparkMultimodalModel,
+    MuseSparkRMSNorm,
+)
 from torchtitan.models.muse_spark.renderer import MuseSparkRendererConfig
 from torchtitan.models.muse_spark.tokenizer import MuseSparkTokenizer
 from torchtitan.observability.metrics import MetricsProcessor
 from torchtitan.trainer import Trainer
+
 from torchtitan_recipes.models._muse_spark_indexed_replay import (
     COMPACT_CAPACITY,
     IndexedPackedReplay,
@@ -792,12 +797,21 @@ def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark(
         max_num_documents=SOURCE_SEGMENTS_PER_ROW,
         expert_precision="bf16",
     )
+    # The two pre-norms feed BF16 projections from an FP32 residual stream.
+    # Write the branch dtype inside each compiled norm region.
+    for block in cast(MuseSparkModel.Config, config.model).layers:
+        cast(
+            MuseSparkRMSNorm.Config, block.attention_norm
+        ).output_dtype = block.branch_dtype
+        cast(MuseSparkRMSNorm.Config, block.ffn_norm).output_dtype = block.branch_dtype
     for _, attention, _, _ in config.model.traverse(VarlenInnerAttention.Config):
         attention.sdpa_backends = ["FLASH_ATTENTION"]
     _configure_muse_spark_64_benchmark(
         config, fake_backend=False, save_moe_projections=save_moe_projections
     )
-    config.parallelism = replace(config.parallelism, fsdp_reshard_after_forward="default")
+    config.parallelism = replace(
+        config.parallelism, fsdp_reshard_after_forward="default"
+    )
     config.training.steps = REPLAY_UPDATES
     config.dataloader = replace(
         config.dataloader,

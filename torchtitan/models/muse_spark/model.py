@@ -281,10 +281,12 @@ class MuseSparkRMSNorm(RMSNorm):
     @dataclass(kw_only=True, slots=True)
     class Config(RMSNorm.Config):
         gain_center: float = 1.0
+        output_dtype: torch.dtype | None = None
 
     def __init__(self, config: Config):
         super().__init__(config)
         self.gain_center = config.gain_center
+        self.output_dtype = config.output_dtype
         # Compiled code reads gain_center from this tensor, so every graph takes it as an
         # input and saves the same tensors. A float is baked into layer 0's graph, and remat
         # recompute of layer 0 can run layer 1's graph, which saves different tensors
@@ -319,7 +321,7 @@ class MuseSparkRMSNorm(RMSNorm):
             effective_weight_D,
             self.eps,
         )
-        return output_TD.to(input_dtype)
+        return output_TD.to(self.output_dtype or input_dtype)
 
 
 class MuseSparkRMSNormWithInputScale(MuseSparkRMSNorm):
@@ -334,7 +336,7 @@ class MuseSparkRMSNormWithInputScale(MuseSparkRMSNorm):
         if effective_weight_D is not None:
             input = effective_weight_D * input
         output_TD = F.rms_norm(input, self.normalized_shape, None, self.eps)
-        return output_TD.to(input_dtype)
+        return output_TD.to(self.output_dtype or input_dtype)
 
     def to_dist_moe_postprocess(
         self,
