@@ -24,7 +24,7 @@ INPUT_PLAN = "48edfcbac44fbf3ffd4a68285f0a99029ce7275c5cbece738c37abe50b5aa945"
 PINNED_SOURCE_COMMIT = "814df1c9e892f0e45bb2af5523c1968c52e7262b"
 
 
-def build_repacked_config(source_dir, plan_dir, *, slot_gib=40, save_projections=True):
+def build_repacked_config(source_dir, plan_dir, *, slot_gib=49, save_projections=True):
     """Use the normal benchmark controls and rebuild the smaller native CP1 model."""
     source_bytes = (Path(source_dir) / "manifest.json").read_bytes()
     source = json.loads(source_bytes)
@@ -142,7 +142,7 @@ def bf16_repacked():
     config = build_repacked_config(
         source_dir,
         plan_dir,
-        slot_gib=int(os.environ.get("MUSE_SLOT_GIB", "40")),
+        slot_gib=int(os.environ.get("MUSE_SLOT_GIB", "49")),
         save_projections=os.environ.get("MUSE_SAVE_PROJ", "1") == "1",
     )
     if os.environ.get("RANK") == "0" and (output_dir := os.environ.get("REPRO_OUTPUT")):

@@ -2,7 +2,7 @@
 
 This experiment replays the same 100 C4 updates as the 64-GPU, 32K CP2 benchmark
 at 29,184 physical slots per GPU. It uses DP64, EP64, CP1, TP1 and one
-microbatch per update with a 40 GiB Dist-MoE activation slot. It keeps document
+microbatch per update with a 49 GiB Dist-MoE activation slot. It keeps document
 boundaries and the modulo-32 phase of forced balanced routing. Use this setup
 for throughput comparisons. Forced routing is unsuitable for training quality
 measurements.
