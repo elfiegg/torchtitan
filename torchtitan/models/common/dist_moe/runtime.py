@@ -199,6 +199,9 @@ class DistMoeRuntime(Configurable):
             vmm_capacity_factor: Optional total device-plus-host scratch
                 capacity. ``None`` disables VMM. A larger value lets routing
                 above ``scratch_capacity_factor`` spill into host-backed pages.
+            bf16_h3_offload_layers: Zero-based Dist-MoE layer ordinals whose
+                BF16 expert down-projection outputs are kept in pinned host
+                memory. Requires a single activation slot and fixed shapes.
             pp_activation_slot_policy: PP liveness granularity.
                 ``"stage_microbatch"`` lets different local stages reuse slots
                 as soon as each stage's backward releases its state.
@@ -214,6 +217,7 @@ class DistMoeRuntime(Configurable):
         activation_slot_capacity_factor: float | None = None
         scratch_capacity_factor: float = 1.0
         vmm_capacity_factor: float | None = None
+        bf16_h3_offload_layers: tuple[int, ...] = ()
         pp_activation_slot_policy: PPActivationSlotPolicy = "stage_microbatch"
         inference: bool = False
 
@@ -438,14 +442,16 @@ class DistMoeRuntime(Configurable):
                 total_scratch_capacity_factor=self.config.vmm_capacity_factor
             )
         )
-        activation_options: dict[str, float] = {}
+        annex_options: dict[str, float | tuple[int, ...]] = {}
         if module.activation == "swiglu_clamped":
             assert module.swiglu_alpha is not None
             assert module.swiglu_limit is not None
-            activation_options = {
+            annex_options = {
                 "swiglu_alpha": module.swiglu_alpha,
                 "swiglu_limit": module.swiglu_limit,
             }
+        if self.config.bf16_h3_offload_layers:
+            annex_options["bf16_h3_offload_layers"] = self.config.bf16_h3_offload_layers
         return dist_moe.Config(
             max_num_local_input_tokens=max_num_local_input_tokens,
             hidden_dim=module.hidden_dim,
@@ -465,7 +471,7 @@ class DistMoeRuntime(Configurable):
             activation=module.activation,
             wgrad_dtype=wgrad_dtype,
             inference=self.config.inference,
-            **activation_options,
+            **annex_options,
         )
 
     def _bf16_grouped_gemm_preset(self, module: DistMoeRoutedExperts) -> str | None:

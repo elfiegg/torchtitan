@@ -140,6 +140,12 @@ def test_compact_bf16_benchmark_config_loader(tmp_path, monkeypatch):
     ):
         runtime.setitem(sys.modules, "dist_moe", ModuleType("dist_moe"))
         config = ConfigLoader().load(args)
+        host_h3_config = ConfigLoader().load(
+            [
+                *args[:-1],
+                "muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_h3_benchmark",
+            ]
+        )
 
     assert config.model.max_context_length == 29_184
     assert config.training.steps == 100
@@ -156,6 +162,9 @@ def test_compact_bf16_benchmark_config_loader(tmp_path, monkeypatch):
     )
     assert config.dist_moe_runtime.activation_slot_bytes == 49 * 2**30
     assert config.dist_moe_runtime.scratch_capacity_factor == 1.0
+    assert config.dist_moe_runtime.bf16_h3_offload_layers == ()
+    layers = host_h3_config.dist_moe_runtime.bf16_h3_offload_layers
+    assert len(layers) == 33 and layers[0] == 5 and layers[-1] == 60
     assert "feed_forward.unpooler.*" in config.activation_remat.offload_regions
     assert isinstance(config.dataloader.dataset, replay.IndexedPackedReplay)
     assert all(

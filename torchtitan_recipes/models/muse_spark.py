@@ -862,6 +862,51 @@ def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark(
     return replace(config)
 
 
+def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_h3_benchmark() -> Trainer.Config:
+    """Use pinned host snapshots for selected FC2 outputs in the compact replay."""
+    config = muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark()
+    # Zero-based layers selected by the compact 49 GiB replay planner.
+    config.dist_moe_runtime = replace(
+        config.dist_moe_runtime,
+        bf16_h3_offload_layers=(
+            5,
+            6,
+            7,
+            10,
+            11,
+            14,
+            15,
+            17,
+            18,
+            20,
+            22,
+            24,
+            27,
+            28,
+            29,
+            31,
+            33,
+            34,
+            36,
+            38,
+            39,
+            41,
+            44,
+            45,
+            47,
+            49,
+            51,
+            52,
+            54,
+            55,
+            58,
+            59,
+            60,
+        ),
+    )
+    return replace(config)
+
+
 def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_benchmark_fake() -> Trainer.Config:
     """Validate the logical-64 BF16 benchmark recipe with FakePG."""
     return _muse_spark_816b_dist_moe_spmd_64_benchmark(

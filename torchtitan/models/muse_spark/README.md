@@ -157,6 +157,16 @@ BF16 Adam moments on device, and a 49 GiB Dist-MoE activation slot. It runs
 Use this configuration for throughput comparisons. Bring the staged replay
 source and placement plan and the Muse Spark tokenizer assets to each node.
 
+Install the matching Dist-MoE revision in the benchmark environment. Its
+native BF16 path supplies fused SwiGLU replay and the learned input-scale
+RMSNorm postprocess. TorchTitan supplies the runtime configuration and the
+postprocess's live FSDP weight.
+
+```bash
+python -m pip install --no-deps --force-reinstall \
+  'dist_moe @ git+https://github.com/elfiegg/DistMoE.git@9bcd9324697e2b869616306c25d70b82ab8bceca'
+```
+
 ```bash
 export MUSE_REPACK_SOURCE=/shared/replay/indexed-source
 export MUSE_REPACK_PLAN=/shared/replay/indexed-phase-plan
@@ -167,9 +177,17 @@ NCCL_NVLS_ENABLE=1 PYTORCH_ALLOC_CONF=pinned_max_round_threshold_mb:1 \
   --config muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark
 ```
 
+Use `muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_h3_benchmark` to add
+pinned host snapshots for the 33 selected FC2 outputs. This variant is sized
+for the Rubin benchmark's host memory. Dist-MoE checks the single-slot
+geometry, staging space, and eager replay parity before graph capture.
+
 Each source and plan directory contains a manifest and its own NumPy arrays.
-Stage the same input on each rank. See the 64-GPU benchmark recipe docstring
-for dependency and NCCL teardown considerations.
+Stage the same input on each rank. The measured compact runtime used
+PyTorch `2.16.0.dev20261119+cu134` at
+`daf1a40a5de981f7cab47fed4dd9883b1581cd63` and torch-remat at
+`71905a6e60123a9adadd4d0cd5acae4e3cb8ba88`. See the 64-GPU benchmark recipe
+docstring for NCCL teardown considerations in the pinned stack.
 
 Dist-MoE requires Blackwell GPUs and the optional
 `dist_moe` package. Dist-MoE owns dispatch, expert computation, and combine.
