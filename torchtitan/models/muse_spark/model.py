@@ -345,8 +345,25 @@ class MuseSparkRMSNormWithInputScale(MuseSparkRMSNorm):
     def to_dist_moe_postprocess(
         self,
     ) -> Callable[[torch.Tensor], torch.Tensor]:
-        """Return the learned RMSNorm as an eager Dist-MoE callback."""
-        return self
+        """Return the norm as a Dist-MoE postprocess.
+
+        With a trainable gain, Dist-MoE fuses this norm with the router-score
+        weighting and top-k combine, and calls this module where its kernel
+        does not apply (see the README). A missing or frozen gain, e.g. under
+        LoRA, keeps this module as an eager callback.
+        """
+        weight = self.weight
+        if weight is None or not weight.requires_grad:
+            return self
+        import dist_moe
+
+        return dist_moe.InputScaledRMSNormPostprocess(
+            # FSDP swaps in the unsharded gain for each forward and backward.
+            weight_getter=lambda: self.weight,
+            eps=self.eps,
+            gain_center=self.gain_center,
+            fallback=self,
+        )
 
 
 class MuseSparkNormPreservingResidualConnection(Module):
