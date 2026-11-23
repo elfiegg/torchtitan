@@ -763,6 +763,18 @@ def muse_spark_816b_a42b_dist_moe_mxfp8_spmd_64_benchmark_fake() -> Trainer.Conf
 # padding. 29,184 tokens is the row length that was benchmarked with the
 # memory settings below; other lengths need their own memory check.
 _MUSE_SPARK_COMPACT_SEQ_LEN = 29_184
+# The 33 layers that Dist-MoE's 49 GiB activation slot recomputes at this
+# shape, from Dist-MoE's activation plan. Their W2 outputs go to pinned host
+# memory: 29,184 tokens x top-8 x compressed dim 4,096 x 2 bytes = 1.78 GiB per
+# layer and GPU, 59 GiB in all. The slot keeps the other 29, including the last.
+# TODO: let Dist-MoE select the layers its slot recomputes, so this list cannot
+# drift from its plan when the slot size or row length changes.
+# fmt: off
+_MUSE_SPARK_COMPACT_H3_OFFLOAD_LAYERS = (
+    5, 6, 7, 10, 11, 14, 15, 17, 18, 20, 22, 24, 27, 28, 29, 31, 33, 34, 36, 38,
+    39, 41, 44, 45, 47, 49, 51, 52, 54, 55, 58, 59, 60,
+)
+# fmt: on
 
 
 def _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(
@@ -775,6 +787,8 @@ def _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(
     the 32K CP2 benchmark. It keeps that benchmark's forced routing, activation
     offload, FSDP symmetric memory, and optimizer CUDA graph, saves and
     offloads the MoE projections, and keeps BF16 Adam moments on the GPU.
+    The W2 outputs of the Dist-MoE layers the activation slot recomputes go to
+    pinned host memory, 59 GiB per GPU on top of the activation offload.
     Launch notes and dependencies are those of the CP2 benchmark, except that
     no CP group needs an NVLink domain.
     """
@@ -811,6 +825,7 @@ def _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(
         activation_slot_bytes=49 * 2**30,
         activation_slot_capacity_factor=None,
         scratch_capacity_factor=1.0,
+        bf16_h3_offload_layers=_MUSE_SPARK_COMPACT_H3_OFFLOAD_LAYERS,
     )
     config.loss = replace(cast(ChunkedLossWrapper.Config, config.loss), num_chunks=16)
     # Every offloaded tensor has the same size each step, and 29,184 tokens

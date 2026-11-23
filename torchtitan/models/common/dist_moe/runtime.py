@@ -199,6 +199,13 @@ class DistMoeRuntime(Configurable):
             vmm_capacity_factor: Optional total device-plus-host scratch
                 capacity. ``None`` disables VMM. A larger value lets routing
                 above ``scratch_capacity_factor`` spill into host-backed pages.
+            bf16_h3_offload_layers: Zero-based Dist-MoE layers whose BF16 W2
+                outputs (Dist-MoE's H3) are copied to pinned host memory in
+                forward and copied back in backward, instead of recomputing the
+                W2 GEMM. Only layers the activation slot recomputes gain
+                anything. Leave out the last layer: its backward follows its
+                forward at once, so the copies cannot overlap compute. Requires
+                one activation slot and fixed local token counts.
             pp_activation_slot_policy: PP liveness granularity.
                 ``"stage_microbatch"`` lets different local stages reuse slots
                 as soon as each stage's backward releases its state.
@@ -214,6 +221,7 @@ class DistMoeRuntime(Configurable):
         activation_slot_capacity_factor: float | None = None
         scratch_capacity_factor: float = 1.0
         vmm_capacity_factor: float | None = None
+        bf16_h3_offload_layers: tuple[int, ...] = ()
         pp_activation_slot_policy: PPActivationSlotPolicy = "stage_microbatch"
         inference: bool = False
 
@@ -465,6 +473,7 @@ class DistMoeRuntime(Configurable):
             activation=module.activation,
             wgrad_dtype=wgrad_dtype,
             inference=self.config.inference,
+            bf16_h3_offload_layers=self.config.bf16_h3_offload_layers,
             **activation_options,
         )
 
