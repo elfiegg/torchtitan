@@ -281,10 +281,16 @@ class MuseSparkRMSNorm(RMSNorm):
     @dataclass(kw_only=True, slots=True)
     class Config(RMSNorm.Config):
         gain_center: float = 1.0
+        output_dtype: torch.dtype | None = None
+        """Dtype of the output; ``None`` keeps the input dtype. A block's
+        pre-norms set the branch dtype here, so the cast from the FP32 residual
+        stream runs inside the compiled region instead of as separate kernels in
+        forward, recompute, and backward."""
 
     def __init__(self, config: Config):
         super().__init__(config)
         self.gain_center = config.gain_center
+        self.output_dtype = config.output_dtype
         # Compiled code reads gain_center from this tensor, so every graph takes it as an
         # input and saves the same tensors. A float is baked into layer 0's graph, and remat
         # recompute of layer 0 can run layer 1's graph, which saves different tensors
@@ -319,7 +325,7 @@ class MuseSparkRMSNorm(RMSNorm):
             effective_weight_D,
             self.eps,
         )
-        return output_TD.to(input_dtype)
+        return output_TD.to(self.output_dtype or input_dtype)
 
 
 class MuseSparkRMSNormWithInputScale(MuseSparkRMSNorm):
@@ -436,7 +442,6 @@ class MuseSparkTransformerBlock(TransformerBlock):
         attention_residual: MuseSparkNormPreservingResidualConnection.Config
         post_ffn_norm: MuseSparkRMSNormWithInputScale.Config
         ffn_residual: MuseSparkNormPreservingResidualConnection.Config
-        branch_dtype: torch.dtype = torch.bfloat16
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -447,7 +452,6 @@ class MuseSparkTransformerBlock(TransformerBlock):
         self.ffn_norm = config.ffn_norm.build()
         self.post_ffn_norm = config.post_ffn_norm.build()
         self.ffn_residual = config.ffn_residual.build()
-        self.branch_dtype = config.branch_dtype
 
         self.feed_forward = config.feed_forward.build()
 
@@ -460,7 +464,7 @@ class MuseSparkTransformerBlock(TransformerBlock):
         padding_mask: torch.Tensor | None = None,
         aux_loss_denominator: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        attention_input_TD = self.attention_norm(x).to(self.branch_dtype)
+        attention_input_TD = self.attention_norm(x)
         attention_output_TD = self.attention(
             attention_input_TD,
             attention_metadata,
@@ -470,7 +474,7 @@ class MuseSparkTransformerBlock(TransformerBlock):
         attention_branch_TD = self.post_attention_norm(attention_output_TD)
         stream_TD = self.attention_residual(x, attention_branch_TD)
 
-        ffn_input_TD = self.ffn_norm(stream_TD).to(self.branch_dtype)
+        ffn_input_TD = self.ffn_norm(stream_TD)
         if isinstance(self.feed_forward, MoE):
             ffn_output_TD = self.feed_forward(
                 ffn_input_TD,
