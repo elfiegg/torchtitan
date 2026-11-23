@@ -39,7 +39,7 @@ zero-based rank and one common rendezvous endpoint. The script sets
 Use an allocation in one NVLink domain.
 
 ```bash
-scripts/muse_spark_compact/run_node.sh NODE_RANK MASTER_ADDR MASTER_PORT
+scripts/muse_spark_compact/run_node.sh bf16 NODE_RANK MASTER_ADDR MASTER_PORT
 ```
 
 After training, verify all 64 completion and dtype receipts and summarize
@@ -53,3 +53,6 @@ The summary shows rank 0 plus all rank results. Nominal tokens/s/GPU is the
 mean of `32,768 / update_seconds`. Native tokens/s/GPU and model TFLOPS/GPU
 are the means of TorchTitan's logged metrics. The TFLOPS estimate uses the
 physical workload represented by the compact recipe.
+
+Use `mxfp8` to run the compact native staged MXFP8 recipe with a 42 GiB
+expert slot. FlashAttention and the language-model head stay in BF16.
