@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from h3_campaign import host_h3_fields
 from indexed_packed_replay import (
     IndexedPackedReplay,
     LANES,
@@ -156,6 +157,7 @@ def bf16_repacked():
             "norm_fusion": os.environ.get("EXP_NORM_FUSION", "0"),
             "swiglu_recompute": os.environ.get("EXP_SWIGLU_RECOMPUTE", "0"),
             "learned_route": os.environ.get("EXP_LEARNED_ROUTE", "0"),
+            "host_h3": host_h3_fields(os.environ["VARIANT"]),
             "physical_tokens_per_gpu": CAPACITY,
             "physical_global_tokens": config.training.num_tokens_per_train_step,
             "workload_equivalent_tokens_per_gpu": ORIGINAL_CAPACITY,
