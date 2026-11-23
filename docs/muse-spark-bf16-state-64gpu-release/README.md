@@ -1,12 +1,10 @@
-<!-- TODO before publishing: replace {{HARDWARE}}. -->
-
 # Muse Spark Open 816B-A42B: BF16 optimizer state on 64 GPUs
 
 This release measures TorchTitan training throughput for Muse Spark Open
-816B-A42B on 64 {{HARDWARE}} GPUs with BF16 compute, BF16 Adam moments and
-BF16 FSDP gradient reductions; master weights and gradients stay FP32. A 70 GiB
-Dist-MoE activation slot keeps more MoE activations on the GPU, so fewer MoE
-layers recompute in backward.
+816B-A42B on 64 NVIDIA Vera Rubin GPUs with BF16 compute, BF16 Adam moments
+and BF16 FSDP gradient reductions; master weights and gradients stay FP32. A
+70 GiB Dist-MoE activation slot keeps more MoE activations on the GPU, so fewer
+MoE layers recompute in backward.
 
 It is a performance benchmark, not a training recipe. Routing is forced to a
 balanced round-robin assignment and weights are randomly initialized.
@@ -87,7 +85,7 @@ baseline used a different tokenizer, so its losses are not comparable.
 
 | Area | Configuration |
 |---|---|
-| Hardware | 64 {{HARDWARE}} GPUs: 16 hosts x 4 GPUs, all in one NVLink domain (required by Dist-MoE EP64). Each CP group must share an NVLink domain. |
+| Hardware | 64 NVIDIA Vera Rubin GPUs: 16 hosts x 4 GPUs, all in one NVLink domain (required by Dist-MoE EP64). Each CP group must share an NVLink domain. |
 | Model | Muse Spark Open 816B-A42B, text decoder: 62 layers, hidden 8,192, 256 compressed-MoE experts, top-8 |
 | Batch | Sequence length 32,768; global batch 64 sequences (2,097,152 tokens per update); 2 microbatches per DP rank |
 | Data | `c4_test` with concat-then-split packing and at most 64 documents per row; Muse Spark Open tokenizer (revision `a604fa753b672b5dca3304d8648cf756120e29db`) |
