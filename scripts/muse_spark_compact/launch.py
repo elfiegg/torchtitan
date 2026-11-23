@@ -74,6 +74,7 @@ def close(self):
         "trainer_close": "success", "torch_version": torch.__version__,
         "torch_git_version": torch.version.git_version, "device": props.name,
         "device_total_memory_gib": props.total_memory / 2**30,
+        "learned_route": learned_route.calls.receipt(),
     }
     (OUTPUT / f"completion-rank{RANK}.json").write_text(json.dumps(result, indent=2))
     sys.stdout.flush()
@@ -91,6 +92,10 @@ try:
         raise RuntimeError("Expected the pinned benchmark PyTorch build")
     import norm_fusion  # noqa: F401  # Installs the scoped compile-region change.
     import swiglu_recompute  # noqa: F401  # Installs BF16 replay fusion.
+    import learned_route
+
+    learned_route.install()
+
     from torchtitan.train import main
 
     main()
