@@ -758,6 +758,12 @@ def muse_spark_816b_a42b_dist_moe_mxfp8_spmd_64_benchmark_fake() -> Trainer.Conf
 # padding. 29,184 tokens is the row length that was benchmarked with the
 # memory settings below; other lengths need their own memory check.
 _MUSE_SPARK_COMPACT_SEQ_LEN = 29_184
+# fmt: off
+_MUSE_SPARK_COMPACT_H3_OFFLOAD_LAYERS = (
+    5, 6, 7, 10, 11, 14, 15, 17, 18, 20, 22, 24, 27, 28, 29, 31, 33, 34, 36, 38,
+    39, 41, 44, 45, 47, 49, 51, 52, 54, 55, 58, 59, 60,
+)
+# fmt: on
 
 
 def _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(
@@ -806,6 +812,11 @@ def _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(
         activation_slot_bytes=49 * 2**30,
         activation_slot_capacity_factor=None,
         scratch_capacity_factor=1.0,
+        # Dist-MoE layers that the 49 GiB slot recomputes at this shape, as
+        # planned by Dist-MoE: keep their down-projection outputs in pinned
+        # host memory (1.78 GiB per layer and GPU, 59 GiB in all) instead of
+        # recomputing that GEMM in backward.
+        bf16_h3_offload_layers=_MUSE_SPARK_COMPACT_H3_OFFLOAD_LAYERS,
     )
     config.loss = replace(cast(ChunkedLossWrapper.Config, config.loss), num_chunks=16)
     # Every offloaded tensor has the same size each step, and 29,184 tokens
