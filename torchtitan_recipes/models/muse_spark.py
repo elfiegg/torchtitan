@@ -664,9 +664,6 @@ def _muse_spark_816b_dist_moe_spmd_64_benchmark(
         expert_precision=expert_precision,
         context_parallel_degree=2,
     )
-    # The fake recipe already forces routing.
-    if not fake_backend:
-        _use_forced_balanced_routing(cast(MuseSparkModel.Config, config.model))
     # Forced routing balances the EP load, so 2x scratch is enough.
     config.dist_moe_runtime = replace(
         config.dist_moe_runtime,
@@ -678,6 +675,31 @@ def _muse_spark_816b_dist_moe_spmd_64_benchmark(
     offload_regions = ["attention.*"]
     if expert_precision == "mxfp8":
         offload_regions += _MUSE_SPARK_MOE_PROJECTION_REGIONS
+    _use_64_gpu_benchmark_settings(
+        config, fake_backend=fake_backend, offload_regions=offload_regions
+    )
+    if not fake_backend:
+        config.dataloader = replace(
+            config.dataloader,
+            dataset=ConcatThenSplitPackingConfig(dataset=DATASETS["c4_test"]),
+            shuffle=False,
+        )
+        config.training.steps = 100
+    return config
+
+
+def _use_64_gpu_benchmark_settings(
+    config: Trainer.Config, *, fake_backend: bool, offload_regions: list[str]
+) -> None:
+    """Apply the settings both 64-GPU benchmarks share.
+
+    Forced balanced routing, save-and-offload remat with the last block kept on
+    GPU, Adam moments on the GPU with an optimizer CUDA graph, seed 42, and,
+    with real NCCL, FSDP symmetric memory and no checkpointing.
+    """
+    # The fake recipe already forces routing.
+    if not fake_backend:
+        _use_forced_balanced_routing(cast(MuseSparkModel.Config, config.model))
     # Keep the last block on GPU: only the loss runs between its forward and
     # its backward, so its copies could not overlap compute.
     num_layers = len(cast(MuseSparkModel.Config, config.model).layers)
@@ -702,18 +724,10 @@ def _muse_spark_816b_dist_moe_spmd_64_benchmark(
     ]
     config.optim.enable_accelerator_graph = True
     config.debug.seed = 42
-    if fake_backend:
+    if not fake_backend:
         # FakePG has no NCCL communicator for symmetric memory.
-        return config
-    config.parallelism.fsdp_symm_mem_scope = "all"
-    config.checkpointer = None
-    config.dataloader = replace(
-        config.dataloader,
-        dataset=ConcatThenSplitPackingConfig(dataset=DATASETS["c4_test"]),
-        shuffle=False,
-    )
-    config.training.steps = 100
-    return config
+        config.parallelism.fsdp_symm_mem_scope = "all"
+        config.checkpointer = None
 
 
 def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_benchmark() -> Trainer.Config:
@@ -742,6 +756,83 @@ def muse_spark_816b_a42b_dist_moe_mxfp8_spmd_64_benchmark_fake() -> Trainer.Conf
     return _muse_spark_816b_dist_moe_spmd_64_benchmark(
         fake_backend=True, expert_precision="mxfp8"
     )
+
+
+# One first-fit row per GPU. The 32K rows of the CP2 benchmark end at the
+# 64-document cap with about 12% padding, so a shorter row drops mostly
+# padding. 29,184 tokens is the row length that was benchmarked with the
+# memory settings below; other lengths need their own memory check.
+_MUSE_SPARK_COMPACT_SEQ_LEN = 29_184
+
+
+def _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(
+    *, fake_backend: bool
+) -> Trainer.Config:
+    """Benchmark BF16 Dist-MoE on 64 GPUs without CP. Benchmark only.
+
+    Each GPU trains one 29,184-token row per step on DP64, CP1, and EP64, so
+    no CP communication runs, and first-fit packing leaves less padding than
+    the 32K CP2 benchmark. It keeps that benchmark's forced routing, activation
+    offload, FSDP symmetric memory, and optimizer CUDA graph, saves and
+    offloads the MoE projections, and keeps BF16 Adam moments on the GPU.
+    Launch notes and dependencies are those of the CP2 benchmark, except that
+    no CP group needs an NVLink domain.
+    """
+    config = _muse_spark_816b_dist_moe_spmd(
+        seq_len=_MUSE_SPARK_COMPACT_SEQ_LEN,
+        global_batch_size=64,
+        data_parallel_shard_degree=64,
+        tensor_parallel_degree=1,
+        context_parallel_degree=1,
+        expert_parallel_degree=64,
+        fake_backend=fake_backend,
+        attn_backend="varlen",
+        max_num_documents=64,
+    )
+    config.parallelism.fsdp_reshard_after_forward = "default"
+    for _, inner_attention, _, _ in config.model.traverse(VarlenInnerAttention.Config):
+        inner_attention.sdpa_backends = ["FLASH_ATTENTION"]
+    _use_64_gpu_benchmark_settings(
+        config,
+        fake_backend=fake_backend,
+        offload_regions=["attention.*", *_MUSE_SPARK_MOE_PROJECTION_REGIONS],
+    )
+    # BF16 gradient reduction and BF16 Adam moments; the master weights stay FP32.
+    config.precision.reduce_dtype = "bfloat16"
+    config.optim.optimizer.optimizers = [
+        replace(cast(AdamW.Config, optimizer), moment_dtype="bfloat16")
+        for optimizer in config.optim.optimizer.optimizers
+    ]
+    # With the moments in BF16, one 49 GiB activation slot fits and saves most
+    # Dist-MoE layers instead of recomputing them; forced routing needs no
+    # scratch headroom. 16 loss chunks keep the loss peak below that slot.
+    config.dist_moe_runtime = replace(
+        config.dist_moe_runtime,
+        activation_slot_bytes=49 * 2**30,
+        activation_slot_capacity_factor=None,
+        scratch_capacity_factor=1.0,
+    )
+    config.loss = replace(cast(ChunkedLossWrapper.Config, config.loss), num_chunks=16)
+    if not fake_backend:
+        config.dataloader = replace(
+            config.dataloader,
+            dataset=FirstFitPackingConfig(dataset=DATASETS["c4_test"]),
+            shuffle=False,
+        )
+        config.training.steps = 100
+    return config
+
+
+def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark() -> Trainer.Config:
+    """Benchmark 29K BF16 Dist-MoE on 64 GPUs without CP, with forced routing."""
+    return _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(fake_backend=False)
+
+
+def muse_spark_816b_a42b_dist_moe_bf16_spmd_64_compact_benchmark_fake() -> (
+    Trainer.Config
+):
+    """Validate the logical-64 compact BF16 benchmark recipe with FakePG."""
+    return _muse_spark_816b_dist_moe_spmd_64_compact_benchmark(fake_backend=True)
 
 
 def muse_spark_816b_a42b_dist_moe_bf16_spmd_256() -> Trainer.Config:
