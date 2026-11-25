@@ -11,7 +11,7 @@
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import torch
 import torch_remat as remat
@@ -141,6 +141,18 @@ class ActivationRematConfig:
     Offloading is per storage: a save of an already-offloaded storage is
     offloaded whatever its region, and one of a storage another save keeps
     on GPU stays there, since offloading it would free nothing.
+    """
+
+    offload_buffer_capacity: Literal["power_of_two", "exact"] = "power_of_two"
+    """
+    Capacity of the pinned host buffers that offloads copy into, which are
+    pooled and reused across steps. ``"power_of_two"`` rounds each request
+    up, so tensors whose size changes between steps (e.g. expert inputs under
+    EP) share buffers instead of growing the pool. ``"exact"`` saves the
+    rounding (up to 2x per buffer) when every offloaded tensor has the same
+    size each step, e.g. with fixed-length microbatches. Launch with
+    ``PYTORCH_ALLOC_CONF=pinned_max_round_threshold_mb:1`` so the caching
+    host allocator does not round them up instead.
     """
 
     block_overrides: list[BlockRematOverride] = field(default_factory=list)

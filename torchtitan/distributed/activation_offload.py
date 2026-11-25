@@ -246,18 +246,20 @@ class _PinnedBufferPool:
     microbatches in flight would not: the next microbatch's forward replay
     would overwrite buffers not yet reloaded (see ACTIVATION_OFFLOAD.md).
 
-    Buffers are keyed by power-of-two capacity, and a request gets a view of
-    its first ``nbytes``, so saved tensors whose size varies from step to
-    step (e.g. expert inputs under EP) share buffers instead of growing the
-    pool every step. The caching host allocator rounds pinned allocations up
-    to a power of two by default, so this usually costs no extra memory.
+    Buffers are keyed by capacity, and a request gets a view of its first
+    ``nbytes``. A power-of-two capacity lets saved tensors whose size varies
+    from step to step (e.g. expert inputs under EP) share buffers instead of
+    growing the pool every step. The caching host allocator rounds pinned
+    allocations up to a power of two by default, so this usually costs no
+    extra memory. An exact capacity avoids the rounding for fixed sizes.
     """
 
     # TODO: enforce the graph boundary invariant above. Count captures with
     # torch.cuda.graphs.register_graph_capture_start_hook, record at acquire
     # whether a capture is running and which one, and raise at release when a
     # buffer acquired during a capture is released outside it.
-    def __init__(self) -> None:
+    def __init__(self, *, exact_capacity: bool) -> None:
+        self._exact_capacity = exact_capacity
         # capacity -> free buffers of that capacity, oldest release first:
         # (buffer, event of its last read, recorded during capture).
         self._free: dict[
@@ -267,9 +269,11 @@ class _PinnedBufferPool:
     def acquire(self, nbytes: int, copy_stream: torch.cuda.Stream) -> torch.Tensor:
         """Return an ``nbytes`` view of a buffer that ``copy_stream`` may write
         once it is current."""
-        # The smallest power of two >= nbytes; requesting exactly that makes
-        # the caching host allocator's own rounding a no-op.
-        capacity = 1 << max(nbytes - 1, 0).bit_length()
+        # nbytes, or the smallest power of two >= nbytes; requesting exactly
+        # that makes the caching host allocator's own rounding a no-op.
+        capacity = (
+            nbytes if self._exact_capacity else 1 << max(nbytes - 1, 0).bit_length()
+        )
         free = self._free.get(capacity)
         if not free:
             return torch.empty(capacity, dtype=torch.uint8, pin_memory=True)[:nbytes]
@@ -319,7 +323,9 @@ class ActivationOffloader:
         # ACTIVATION_OFFLOAD.md), and a reload never queues behind an offload.
         self._offload_stream = torch.cuda.Stream()
         self._reload_stream = torch.cuda.Stream()
-        self._host_buffers = _PinnedBufferPool()
+        self._host_buffers = _PinnedBufferPool(
+            exact_capacity=remat_config.offload_buffer_capacity == "exact"
+        )
         # FSDP2's all-gather copy-in stream, which reloads also wait on (see
         # _reload). Set at each model-part forward: fully_shard runs after
         # this offloader is installed.
